@@ -1,6 +1,8 @@
 # forge-potree-demo
 
-> Sample APS application showing the use of Potree pointclouds in the viewer.
+> Demonstração de puxar a extension do Potree para o forge viewer
+> carregar modelo BIM
+> Carregar tambem modelo de nuvem de pontos
 
 ![Screenshot](./screenshot.png)
 
@@ -12,31 +14,7 @@
   - `APS_CLIENT_ID` - your APS application client ID
   - `APS_CLIENT_SECRET` - your APS application client secret
   - `APS_BUCKET` - APS bucket with designs to view
-- run the serve: `yarn start`
-
-When using Visual Studio Code, consider adding the following configuration to your _.vscode/launch.json_:
-
-```json
-{
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "type": "node",
-            "request": "launch",
-            "name": "Launch Server",
-            "skipFiles": [
-                "<node_internals>/**"
-            ],
-            "program": "${workspaceFolder}/server.js",
-            "env": {
-                "APS_CLIENT_ID": "<your APS application client ID>",
-                "APS_CLIENT_SECRET": "<your APS application client secret>",
-                "APS_BUCKET": "<your APS bucket>"
-            }
-        }
-    ]
-}
-```
+- run the serve: `npm start`
 
 ## Development
 
