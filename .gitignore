@@ -1,0 +1,8 @@
+node_modules/
+.vscode/
+*.log
+Thumbs.db
+.DS_Store
+.env
+public/scripts/potree/data/lion_takanawa/data/*
+public/data/*
