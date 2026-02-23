@@ -15,6 +15,13 @@
   - `APS_CLIENT_SECRET` - your APS application client secret
   - `APS_BUCKET` - APS bucket with designs to view
 - run the serve: `npm start`
+- dentro de public/scripts/potree deve ser inserido os arquivos processados da nuvem de pontos.
+  - O worker da extension irá processar. Por padrão temos:
+     - data/lion_takanawa/cloud.js
+     - data/lion_takanawa/data/r/r.bin
+     - data/lion_takanawa/data/r/r.hrc
+     - ...
+  - Para este repositório não fizemos o upload destes arquivos
 
 ## Development
 
