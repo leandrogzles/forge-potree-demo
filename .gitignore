@@ -4,5 +4,5 @@ node_modules/
 Thumbs.db
 .DS_Store
 .env
-public/scripts/potree/data/lion_takanawa/data/*
+
 public/data/*

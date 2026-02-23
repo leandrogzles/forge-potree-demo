@@ -164,6 +164,7 @@ async function loadPointCloud(viewer, url) {
     try {
         console.log('Loading point cloud from:', url);
         const fileName = url.split('/').pop();
+        console.log('fileName:', fileName);
         const name = `Pointcloud: ${fileName}`;
         const position = new THREE.Vector3(0, 0, 0);
         const scale = new THREE.Vector3(1, 1, 1);
