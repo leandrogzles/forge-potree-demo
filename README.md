@@ -1,8 +1,9 @@
 # forge-potree-demo
 
 > Demonstração de puxar a extension do Potree para o forge viewer
-> carregar modelo BIM
-> Carregar tambem modelo de nuvem de pontos
+1º Escolher qual Modelo BIM Carregar
+2º Carregar nuvem de pontos processado para sobrepor ao modelo BIM no Forge
+
 
 ![Screenshot](./screenshot.png)
 
