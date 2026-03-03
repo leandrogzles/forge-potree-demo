@@ -2,22 +2,73 @@ html, body {
     padding: 0;
     margin: 0;
     height: 100vh;
+    overflow: hidden;
 }
 
+/* Main viewer root container */
+#viewer-root {
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+
+/* Forge Viewer container */
+#forge-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+}
+
+/* Potree Overlay container */
+#potree-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+    pointer-events: none;
+    display: none;
+}
+
+#potree-overlay.active {
+    display: block;
+}
+
+#potree-overlay.interactive {
+    pointer-events: auto;
+}
+
+/* Potree iframe styling */
+#potree-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: transparent;
+    pointer-events: inherit;
+}
+
+/* Legacy support for old #viewer ID */
 #viewer {
     height: 100%;
 }
 
+/* UI Controls panel */
 #overlay {
     position: absolute;
     left: 1em;
     top: 1em;
     width: 30em;
     padding: 0.5em;
-    background-color: rgba(255, 255, 255, 0.5);
-    border-radius: 2px;
-    box-shadow: 0 0 4px 2px rgba(0, 0, 0, 0.25);
-    z-index: 1;
+    background-color: rgba(255, 255, 255, 0.9);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    z-index: 100;
+    max-height: calc(100vh - 2em);
+    overflow-y: auto;
 }
 
 #overlay header {
@@ -28,6 +79,75 @@ html, body {
     height: 2em;
 }
 
+#overlay hr {
+    border-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Potree controls styling */
+.potree-controls {
+    padding-top: 0.25em;
+}
+
+.potree-controls label {
+    font-size: 0.875rem;
+    color: #555;
+}
+
+.potree-controls .btn {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+}
+
+.potree-controls .btn-outline-secondary {
+    border-color: #aaa;
+    color: #555;
+}
+
+.potree-controls .btn-outline-secondary:hover {
+    background-color: #f0f0f0;
+}
+
+/* Toggle button states */
+#potree-toggle.active {
+    background-color: #28a745;
+    border-color: #28a745;
+    color: white;
+}
+
+#potree-toggle.active:hover {
+    background-color: #218838;
+    border-color: #1e7e34;
+}
+
+#potree-interact.active {
+    background-color: #007bff;
+    border-color: #007bff;
+    color: white;
+}
+
+#potree-interact.active:hover {
+    background-color: #0069d9;
+    border-color: #0062cc;
+}
+
+/* Camera sync toggle button */
+#camera-sync-toggle.active {
+    background-color: #17a2b8;
+    border-color: #17a2b8;
+    color: white;
+}
+
+#camera-sync-toggle.active:hover {
+    background-color: #138496;
+    border-color: #117a8b;
+}
+
+/* Range input styling */
+.form-control-range {
+    cursor: pointer;
+}
+
+/* Loading indicator */
 .loading {
     position: absolute;
     left: 0;
@@ -38,4 +158,122 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: center;
+    z-index: 50;
+}
+
+/* Status indicator for Potree */
+.potree-status {
+    font-size: 0.75rem;
+    color: #888;
+    margin-top: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background-color: rgba(0, 0, 0, 0.05);
+    border-radius: 2px;
+}
+
+.potree-status.loading {
+    color: #007bff;
+}
+
+.potree-status.loaded {
+    color: #28a745;
+}
+
+.potree-status.error {
+    color: #dc3545;
+}
+
+/* LAS Upload section styling */
+.las-upload-section {
+    padding-top: 0.25em;
+}
+
+.las-upload-section label {
+    font-size: 0.875rem;
+    color: #555;
+}
+
+.las-upload-section .form-control-sm {
+    font-size: 0.75rem;
+}
+
+#las-file-name {
+    border: 1px solid #ced4da;
+    border-radius: 0.2rem;
+    padding: 0.25rem 0.5rem;
+    background-color: #f8f9fa;
+    transition: border-color 0.15s ease-in-out;
+}
+
+#las-file-name:hover {
+    border-color: #80bdff;
+    background-color: #fff;
+}
+
+.las-upload-section .progress {
+    border-radius: 0.2rem;
+    background-color: #e9ecef;
+}
+
+.las-upload-section .progress-bar {
+    font-size: 0.7rem;
+    transition: width 0.3s ease;
+}
+
+.las-upload-section .alert-sm {
+    font-size: 0.75rem;
+    border-radius: 0.2rem;
+}
+
+/* Datasets section styling */
+.datasets-section {
+    padding-top: 0.25em;
+}
+
+.datasets-section label {
+    font-size: 0.875rem;
+    color: #555;
+}
+
+.datasets-section .form-control-sm {
+    font-size: 0.75rem;
+}
+
+#datasets-select {
+    font-size: 0.75rem;
+}
+
+/* Button disabled state improvements */
+.las-upload-section .btn:disabled,
+.datasets-section .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Small button styling */
+.las-upload-section .btn-sm,
+.datasets-section .btn-sm {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+}
+
+/* Success/danger button styles */
+.btn-success {
+    background-color: #28a745;
+    border-color: #28a745;
+}
+
+.btn-success:hover:not(:disabled) {
+    background-color: #218838;
+    border-color: #1e7e34;
+}
+
+.btn-outline-danger {
+    color: #dc3545;
+    border-color: #dc3545;
+}
+
+.btn-outline-danger:hover:not(:disabled) {
+    background-color: #dc3545;
+    color: white;
 }

@@ -1,40 +1,679 @@
 <!DOCTYPE html>
-<html lang="en">
-
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="X-UA-Compatible" content="ie=edge">
-    <title>Autodesk Platform Services: Potree Point Clouds</title>
-    <link rel="stylesheet" href="https://petrbroz.github.io/forge-bootstrap-theme/forge-bootstrap-light.min.css">
-    <link rel="stylesheet" href="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/style.min.css">
-    <link rel="stylesheet" href="/styles/common.css">
+    <title>LAS/LAZ to Potree Converter</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+    <style>
+        :root {
+            --primary-color: #0073ba;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --bg-color: #f5f7fa;
+            --card-bg: #ffffff;
+        }
+        
+        body {
+            background: var(--bg-color);
+            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        
+        .main-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 30px 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .card {
+            border: none;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            margin-bottom: 20px;
+        }
+        
+        .card-header {
+            background: var(--card-bg);
+            border-bottom: 1px solid #eee;
+            padding: 15px 20px;
+            font-weight: 600;
+            font-size: 16px;
+            border-radius: 12px 12px 0 0 !important;
+        }
+        
+        .card-body {
+            padding: 20px;
+        }
+        
+        .upload-zone {
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: #fafafa;
+        }
+        
+        .upload-zone:hover {
+            border-color: var(--primary-color);
+            background: #f0f7ff;
+        }
+        
+        .upload-zone.dragover {
+            border-color: var(--primary-color);
+            background: #e8f4ff;
+        }
+        
+        .upload-zone.has-file {
+            border-color: var(--success-color);
+            background: #f0fff4;
+        }
+        
+        .upload-icon {
+            font-size: 48px;
+            color: #ccc;
+            margin-bottom: 15px;
+        }
+        
+        .upload-zone.has-file .upload-icon {
+            color: var(--success-color);
+        }
+        
+        .upload-text {
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .upload-hint {
+            font-size: 12px;
+            color: #999;
+        }
+        
+        .file-info {
+            background: #f8f9fa;
+            border-radius: 6px;
+            padding: 12px 15px;
+            margin-top: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .file-name {
+            font-weight: 500;
+            color: #333;
+            word-break: break-all;
+        }
+        
+        .file-size {
+            color: #666;
+            font-size: 13px;
+            white-space: nowrap;
+            margin-left: 10px;
+        }
+        
+        .progress {
+            height: 24px;
+            border-radius: 12px;
+            margin: 15px 0;
+        }
+        
+        .progress-bar {
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .status-text {
+            font-size: 13px;
+            color: #666;
+            text-align: center;
+        }
+        
+        .result-card {
+            background: #f0fff4;
+            border: 1px solid #c3e6cb;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+        
+        .result-card h5 {
+            color: var(--success-color);
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        .result-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            font-size: 13px;
+            border-bottom: 1px solid #e8f5e9;
+        }
+        
+        .result-item:last-child {
+            border-bottom: none;
+        }
+        
+        .result-label {
+            color: #666;
+        }
+        
+        .result-value {
+            font-weight: 500;
+            color: #333;
+            word-break: break-all;
+            text-align: right;
+            max-width: 60%;
+        }
+        
+        .error-card {
+            background: #fff5f5;
+            border: 1px solid #f5c6cb;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            color: var(--danger-color);
+        }
+        
+        .dataset-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+        
+        .dataset-info {
+            flex: 1;
+        }
+        
+        .dataset-id {
+            font-weight: 500;
+            color: #333;
+            font-size: 13px;
+        }
+        
+        .dataset-meta {
+            font-size: 12px;
+            color: #888;
+        }
+        
+        .dataset-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .badge-format {
+            font-size: 10px;
+            padding: 3px 8px;
+        }
+        
+        .btn-upload {
+            background: var(--primary-color);
+            border: none;
+            padding: 12px 30px;
+            font-weight: 500;
+        }
+        
+        .btn-upload:hover {
+            background: #005a94;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 30px;
+            color: #999;
+        }
+        
+        .system-status {
+            font-size: 12px;
+            padding: 10px 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        
+        .status-item {
+            display: inline-flex;
+            align-items: center;
+            margin-right: 20px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        
+        .status-dot.ok { background: var(--success-color); }
+        .status-dot.error { background: var(--danger-color); }
+        .status-dot.warning { background: #ffc107; }
+        
+        .copy-btn {
+            cursor: pointer;
+            color: var(--primary-color);
+            font-size: 12px;
+        }
+        
+        .copy-btn:hover {
+            text-decoration: underline;
+        }
+        
+        .nav-links {
+            text-align: center;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        
+        .nav-links a {
+            color: var(--primary-color);
+            margin: 0 15px;
+            font-size: 14px;
+        }
+    </style>
 </head>
-
 <body>
-    <div id="viewer"></div>
-    <div id="overlay">
-        <header>
-            <img src="https://cdn.autodesk.io/logo/black/stacked.png" alt="Autodesk Platform Services">
-            <span>Potree Point Clouds</span>
-        </header>
-        <div class="form-row">
-            <label for="models" class="col-3">Model</label>
-            <select id="models" class="col-9 custom-select custom-select-sm""></select>
+    <div class="main-container">
+        <div class="header">
+            <h1>LAS/LAZ to Potree Converter</h1>
+            <p>Converta arquivos de nuvem de pontos para formato Potree</p>
         </div>
-        <div class="form-row">
-            <label for="pointcloud-url" class="col-3">Point Cloud</label>
-            <input type="url" id="pointcloud-url" class="col-7 form-control form-control-sm">
-            <button id="pointcloud-btn" class="col-2 btn btn-sm btn-primary">Load</button>
+        
+        <!-- System Status -->
+        <div class="system-status" id="system-status">
+            <span class="status-item">
+                <span class="status-dot" id="converter-status"></span>
+                <span id="converter-text">Verificando PotreeConverter...</span>
+            </span>
+            <span class="status-item">
+                <span class="status-dot ok"></span>
+                <span>Storage: Local</span>
+            </span>
+        </div>
+        
+        <!-- Upload Card -->
+        <div class="card">
+            <div class="card-header">
+                📤 Upload de Arquivo
+            </div>
+            <div class="card-body">
+                <input type="file" id="file-input" accept=".las,.laz" style="display: none;">
+                
+                <div class="upload-zone" id="upload-zone">
+                    <div class="upload-icon">📁</div>
+                    <div class="upload-text">Clique ou arraste um arquivo LAS/LAZ</div>
+                    <div class="upload-hint">Tamanho máximo: 2 GB</div>
+                </div>
+                
+                <div id="file-info" class="file-info" style="display: none;">
+                    <div>
+                        <div class="file-name" id="file-name"></div>
+                    </div>
+                    <div class="file-size" id="file-size"></div>
+                </div>
+                
+                <div id="progress-section" style="display: none;">
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar" role="progressbar" style="width: 0%">0%</div>
+                    </div>
+                    <div class="status-text" id="status-text">Preparando upload...</div>
+                </div>
+                
+                <div id="result-section" style="display: none;">
+                    <div class="result-card">
+                        <h5>✓ Conversão Concluída</h5>
+                        <div class="result-item">
+                            <span class="result-label">Dataset ID:</span>
+                            <span class="result-value" id="result-id"></span>
+                        </div>
+                        <div class="result-item">
+                            <span class="result-label">Pontos:</span>
+                            <span class="result-value" id="result-points"></span>
+                        </div>
+                        <div class="result-item">
+                            <span class="result-label">Formato:</span>
+                            <span class="result-value" id="result-format"></span>
+                        </div>
+                        <div class="result-item">
+                            <span class="result-label">URL:</span>
+                            <span class="result-value">
+                                <span id="result-url"></span>
+                                <span class="copy-btn" onclick="copyUrl()">📋 Copiar</span>
+                            </span>
+                        </div>
+                        <div class="result-item">
+                            <span class="result-label">Duração:</span>
+                            <span class="result-value" id="result-duration"></span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="error-section" style="display: none;">
+                    <div class="error-card">
+                        <strong>❌ Erro:</strong>
+                        <span id="error-text"></span>
+                    </div>
+                </div>
+                
+                <div class="text-center mt-4">
+                    <button class="btn btn-primary btn-upload" id="upload-btn" disabled>
+                        Converter para Potree
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Datasets List Card -->
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>📂 Datasets Convertidos</span>
+                <button class="btn btn-sm btn-outline-secondary" id="refresh-btn">Atualizar</button>
+            </div>
+            <div class="card-body" id="datasets-container">
+                <div class="empty-state">Carregando datasets...</div>
+            </div>
+        </div>
+        
+        <!-- Navigation Links -->
+        <div class="nav-links">
+            <a href="/forge-potree-native.html">🎮 Visualizar no Forge Viewer</a>
         </div>
     </div>
-    <script src="https://code.jquery.com/jquery-3.4.1.min.js" integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js" integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1" crossorigin="anonymous"></script>
-    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js" integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM" crossorigin="anonymous"></script>
-    <script src="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/viewer3D.min.js"></script>
-    <script src="/scripts/potree/potree.js"></script>
-    <script src="/scripts/potree/PotreeExtension.js"></script>
-    <script src="/scripts/index.js"></script>
+    
+    <script>
+        // Elements
+        const fileInput = document.getElementById('file-input');
+        const uploadZone = document.getElementById('upload-zone');
+        const fileInfo = document.getElementById('file-info');
+        const fileName = document.getElementById('file-name');
+        const fileSize = document.getElementById('file-size');
+        const uploadBtn = document.getElementById('upload-btn');
+        const progressSection = document.getElementById('progress-section');
+        const progressBar = document.getElementById('progress-bar');
+        const statusText = document.getElementById('status-text');
+        const resultSection = document.getElementById('result-section');
+        const errorSection = document.getElementById('error-section');
+        const datasetsContainer = document.getElementById('datasets-container');
+        
+        let selectedFile = null;
+        let lastResultUrl = null;
+        
+        // Check system health
+        async function checkHealth() {
+            try {
+                const resp = await fetch('/api/las/health');
+                const health = await resp.json();
+                
+                const dot = document.getElementById('converter-status');
+                const text = document.getElementById('converter-text');
+                
+                if (health.converterAvailable) {
+                    dot.className = 'status-dot ok';
+                    text.textContent = 'PotreeConverter: OK';
+                } else {
+                    dot.className = 'status-dot error';
+                    text.textContent = 'PotreeConverter: Não encontrado';
+                }
+            } catch (e) {
+                console.error('Health check failed:', e);
+            }
+        }
+        
+        // Format file size
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+            return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+        }
+        
+        // Handle file selection
+        function handleFileSelect(file) {
+            if (!file) return;
+            
+            const ext = file.name.toLowerCase().split('.').pop();
+            if (ext !== 'las' && ext !== 'laz') {
+                alert('Por favor, selecione um arquivo .las ou .laz');
+                return;
+            }
+            
+            selectedFile = file;
+            fileName.textContent = file.name;
+            fileSize.textContent = formatSize(file.size);
+            fileInfo.style.display = 'flex';
+            uploadZone.classList.add('has-file');
+            uploadBtn.disabled = false;
+            
+            // Hide previous results/errors
+            resultSection.style.display = 'none';
+            errorSection.style.display = 'none';
+        }
+        
+        // Upload zone events
+        uploadZone.addEventListener('click', () => fileInput.click());
+        
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+        
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+        
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                handleFileSelect(e.dataTransfer.files[0]);
+            }
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFileSelect(e.target.files[0]);
+            }
+        });
+        
+        // Upload file
+        async function uploadFile() {
+            if (!selectedFile) return;
+            
+            uploadBtn.disabled = true;
+            progressSection.style.display = 'block';
+            resultSection.style.display = 'none';
+            errorSection.style.display = 'none';
+            
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+            
+            try {
+                const xhr = new XMLHttpRequest();
+                
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 50);
+                        progressBar.style.width = percent + '%';
+                        progressBar.textContent = percent + '%';
+                        statusText.textContent = 'Enviando arquivo...';
+                    }
+                });
+                
+                const response = await new Promise((resolve, reject) => {
+                    xhr.onload = () => {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            try {
+                                resolve(JSON.parse(xhr.responseText));
+                            } catch (e) {
+                                reject(new Error('Resposta inválida do servidor'));
+                            }
+                        } else {
+                            try {
+                                const error = JSON.parse(xhr.responseText);
+                                reject(new Error(error.error || `HTTP ${xhr.status}`));
+                            } catch (e) {
+                                reject(new Error(`HTTP ${xhr.status}`));
+                            }
+                        }
+                    };
+                    
+                    xhr.onerror = () => reject(new Error('Erro de conexão'));
+                    xhr.ontimeout = () => reject(new Error('Timeout'));
+                    
+                    xhr.open('POST', '/api/las/upload');
+                    xhr.timeout = 30 * 60 * 1000;
+                    xhr.send(formData);
+                    
+                    // Simulate conversion progress
+                    let progress = 50;
+                    const interval = setInterval(() => {
+                        if (xhr.readyState === 4) {
+                            clearInterval(interval);
+                            return;
+                        }
+                        progress = Math.min(95, progress + Math.random() * 5);
+                        progressBar.style.width = progress + '%';
+                        progressBar.textContent = Math.round(progress) + '%';
+                        statusText.textContent = 'Convertendo para Potree...';
+                    }, 1000);
+                });
+                
+                if (response.success) {
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = '100%';
+                    progressBar.classList.remove('progress-bar-animated');
+                    progressBar.classList.add('bg-success');
+                    statusText.textContent = 'Conversão concluída!';
+                    
+                    document.getElementById('result-id').textContent = response.datasetId;
+                    document.getElementById('result-points').textContent = 
+                        response.metadata?.points?.toLocaleString() || 'N/A';
+                    document.getElementById('result-format').textContent = 
+                        response.potreeFormat === '2.0' ? 'Potree 2.0' : 'Potree 1.x';
+                    document.getElementById('result-url').textContent = response.cloudJsUrl;
+                    document.getElementById('result-duration').textContent = 
+                        (response.duration / 1000).toFixed(1) + 's';
+                    
+                    lastResultUrl = response.cloudJsUrl;
+                    resultSection.style.display = 'block';
+                    
+                    loadDatasets();
+                } else {
+                    throw new Error(response.error || 'Conversão falhou');
+                }
+                
+            } catch (error) {
+                progressBar.classList.remove('progress-bar-animated');
+                progressBar.classList.add('bg-danger');
+                statusText.textContent = 'Erro na conversão';
+                
+                document.getElementById('error-text').textContent = error.message;
+                errorSection.style.display = 'block';
+            }
+            
+            uploadBtn.disabled = false;
+        }
+        
+        uploadBtn.addEventListener('click', uploadFile);
+        
+        // Copy URL
+        function copyUrl() {
+            if (lastResultUrl) {
+                const fullUrl = window.location.origin + lastResultUrl;
+                navigator.clipboard.writeText(fullUrl).then(() => {
+                    alert('URL copiada para a área de transferência!');
+                });
+            }
+        }
+        
+        // Load datasets
+        async function loadDatasets() {
+            try {
+                const resp = await fetch('/api/las/datasets');
+                const datasets = await resp.json();
+                
+                if (datasets.length === 0) {
+                    datasetsContainer.innerHTML = '<div class="empty-state">Nenhum dataset convertido ainda</div>';
+                    return;
+                }
+                
+                let html = '';
+                for (const dataset of datasets) {
+                    const formatBadge = dataset.potreeFormat === '2.0' 
+                        ? '<span class="badge badge-info badge-format">2.0</span>'
+                        : '<span class="badge badge-secondary badge-format">1.x</span>';
+                    
+                    html += `
+                        <div class="dataset-item">
+                            <div class="dataset-info">
+                                <div class="dataset-id">${dataset.datasetId.substring(0, 16)}... ${formatBadge}</div>
+                                <div class="dataset-meta">${dataset.cloudJsUrl}</div>
+                            </div>
+                            <div class="dataset-actions">
+                                <button class="btn btn-sm btn-outline-primary" onclick="copyDatasetUrl('${dataset.cloudJsUrl}')">📋</button>
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteDataset('${dataset.datasetId}')">🗑️</button>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                datasetsContainer.innerHTML = html;
+                
+            } catch (error) {
+                datasetsContainer.innerHTML = '<div class="empty-state">Erro ao carregar datasets</div>';
+            }
+        }
+        
+        // Copy dataset URL
+        function copyDatasetUrl(url) {
+            const fullUrl = window.location.origin + url;
+            navigator.clipboard.writeText(fullUrl).then(() => {
+                alert('URL copiada!');
+            });
+        }
+        
+        // Delete dataset
+        async function deleteDataset(id) {
+            if (!confirm(`Excluir dataset ${id.substring(0, 8)}...?`)) return;
+            
+            try {
+                await fetch(`/api/las/dataset/${id}`, { method: 'DELETE' });
+                loadDatasets();
+            } catch (error) {
+                alert('Erro ao excluir: ' + error.message);
+            }
+        }
+        
+        // Refresh button
+        document.getElementById('refresh-btn').addEventListener('click', loadDatasets);
+        
+        // Initialize
+        checkHealth();
+        loadDatasets();
+    </script>
 </body>
-
 </html>

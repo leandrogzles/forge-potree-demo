@@ -5,4 +5,15 @@ Thumbs.db
 .DS_Store
 .env
 
+# Potree data
 public/data/*
+
+# LAS upload temp and converted datasets
+temp/uploads/*
+!temp/.gitkeep
+public/datasets/*
+!public/datasets/.gitkeep
+
+# LAS/LAZ files (too large for git)
+*.las
+*.laz

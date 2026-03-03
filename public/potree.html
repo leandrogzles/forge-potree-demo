@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Potree Overlay Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent !important;
+        }
+        
+        #potree-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        
+        /* Override Potree default styles for transparent background */
+        #potree_render_area {
+            background: transparent !important;
+        }
+        
+        canvas {
+            background: transparent !important;
+        }
+        
+        /* Hide Potree default UI elements for overlay mode */
+        #potree_sidebar_container,
+        .potree_sidebar_container,
+        #potree_menu,
+        .potree_menu,
+        .potree_menu_toggle,
+        #potree_map_toggle,
+        #potree_quick_buttons,
+        .potree_quick_buttons,
+        #potree_navigation_cube,
+        .potree_navigation_cube,
+        .annotation,
+        .potree_info_text {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="potree-container"></div>
+    
+    <!-- 
+        Potree Overlay Viewer
+        Uses THREE.js + potree-core for rendering point clouds
+        Isolated from Forge Viewer's THREE.js instance
+    -->
+    
+    <!-- Load THREE.js r147 (compatible with recent Potree) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <script>
+        // Simple Potree-compatible Point Cloud Viewer
+        // This is a lightweight viewer that can load Potree cloud.js format
+        
+        // ========================================================================
+        // CAMERA SYNC STATE
+        // Handles synchronization with parent Forge Viewer
+        // ========================================================================
+        const CameraSyncState = {
+            // Flag to prevent infinite sync loops
+            isSyncingFromParent: false,
+            
+            // Throttle configuration
+            throttleInterval: 33, // ~30fps
+            lastSyncTime: 0,
+            
+            // Delta threshold for change detection
+            positionDelta: 0.001,
+            
+            // Last camera state for delta comparison
+            lastCamera: null
+        };
+        
+        class PotreeOverlayViewer {
+            constructor(container) {
+                this.container = container;
+                this.scene = null;
+                this.camera = null;
+                this.renderer = null;
+                this.controls = null;
+                this.pointCloud = null;
+                this.animationId = null;
+                this.isInitialized = false;
+                
+                this.init();
+            }
+            
+            init() {
+                // Create scene
+                this.scene = new THREE.Scene();
+                
+                // Create camera
+                const aspect = this.container.clientWidth / this.container.clientHeight;
+                this.camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 10000);
+                this.camera.position.set(5, 5, 5);
+                this.camera.lookAt(0, 0, 0);
+                
+                // Create renderer with transparency
+                this.renderer = new THREE.WebGLRenderer({
+                    antialias: true,
+                    alpha: true,
+                    premultipliedAlpha: false
+                });
+                this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+                this.renderer.setPixelRatio(window.devicePixelRatio);
+                this.renderer.setClearColor(0x000000, 0);
+                this.container.appendChild(this.renderer.domElement);
+                
+                // Create controls
+                this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+                this.controls.enableDamping = true;
+                this.controls.dampingFactor = 0.05;
+                this.controls.screenSpacePanning = true;
+                this.controls.minDistance = 0.1;
+                this.controls.maxDistance = 1000;
+                
+                // Listen for camera changes from OrbitControls
+                // This fires when user interacts with Potree camera
+                this.controls.addEventListener('change', () => this.onCameraChange());
+                
+                // Add ambient light
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                this.scene.add(ambientLight);
+                
+                // Add directional light
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+                directionalLight.position.set(10, 10, 10);
+                this.scene.add(directionalLight);
+                
+                // Handle resize
+                window.addEventListener('resize', () => this.onResize());
+                
+                // Start animation loop
+                this.animate();
+                
+                this.isInitialized = true;
+                console.log('[Potree Overlay] Viewer initialized');
+                
+                this.notifyParent('ready', { initialized: true });
+            }
+            
+            /**
+             * Handle camera change from OrbitControls
+             * Sends camera update to parent Forge Viewer
+             */
+            onCameraChange() {
+                // Skip if we're currently receiving a sync from parent
+                if (CameraSyncState.isSyncingFromParent) {
+                    return;
+                }
+                
+                // Throttle: check if enough time has passed
+                const now = performance.now();
+                if (now - CameraSyncState.lastSyncTime < CameraSyncState.throttleInterval) {
+                    return;
+                }
+                
+                // Get current camera state
+                const position = this.camera.position;
+                const target = this.controls.target;
+                const up = this.camera.up;
+                const fov = this.camera.fov;
+                
+                // Delta check: only sync if camera has actually moved
+                const currentCamera = {
+                    position: { x: position.x, y: position.y, z: position.z },
+                    target: { x: target.x, y: target.y, z: target.z }
+                };
+                
+                if (CameraSyncState.lastCamera && 
+                    !this.hasPositionChanged(currentCamera.position, CameraSyncState.lastCamera.position) &&
+                    !this.hasPositionChanged(currentCamera.target, CameraSyncState.lastCamera.target)) {
+                    return;
+                }
+                
+                // Update state
+                CameraSyncState.lastCamera = currentCamera;
+                CameraSyncState.lastSyncTime = now;
+                
+                // Build and send camera update message to parent
+                const payload = {
+                    type: 'camera:update',
+                    source: 'potree',
+                    position: { x: position.x, y: position.y, z: position.z },
+                    target: { x: target.x, y: target.y, z: target.z },
+                    up: { x: up.x, y: up.y, z: up.z },
+                    fov: fov
+                };
+                
+                this.sendCameraToParent(payload);
+            }
+            
+            /**
+             * Check if position has changed beyond threshold
+             */
+            hasPositionChanged(pos1, pos2) {
+                if (!pos1 || !pos2) return true;
+                
+                const dx = Math.abs(pos1.x - pos2.x);
+                const dy = Math.abs(pos1.y - pos2.y);
+                const dz = Math.abs(pos1.z - pos2.z);
+                
+                return dx > CameraSyncState.positionDelta || 
+                       dy > CameraSyncState.positionDelta || 
+                       dz > CameraSyncState.positionDelta;
+            }
+            
+            /**
+             * Send camera update to parent window
+             */
+            sendCameraToParent(payload) {
+                if (window.parent && window.parent !== window) {
+                    window.parent.postMessage(payload, '*');
+                }
+            }
+            
+            /**
+             * Apply camera state received from parent (Forge Viewer)
+             */
+            applyCameraFromParent(position, target, up, fov) {
+                // Set flag to prevent echo/loop
+                CameraSyncState.isSyncingFromParent = true;
+                
+                // Apply position
+                if (position) {
+                    this.camera.position.set(position.x, position.y, position.z);
+                }
+                
+                // Apply target
+                if (target) {
+                    this.controls.target.set(target.x, target.y, target.z);
+                }
+                
+                // Apply up vector
+                if (up) {
+                    this.camera.up.set(up.x, up.y, up.z);
+                }
+                
+                // Apply FOV
+                if (fov !== undefined && fov > 0) {
+                    this.camera.fov = fov;
+                    this.camera.updateProjectionMatrix();
+                }
+                
+                // Update controls to apply changes
+                this.controls.update();
+                
+                // Force render
+                if (this.renderer && this.scene && this.camera) {
+                    this.renderer.render(this.scene, this.camera);
+                }
+                
+                // Reset flag after next frame
+                requestAnimationFrame(() => {
+                    CameraSyncState.isSyncingFromParent = false;
+                });
+            }
+            
+            onResize() {
+                if (!this.container || !this.camera || !this.renderer) return;
+                
+                const width = this.container.clientWidth;
+                const height = this.container.clientHeight;
+                
+                this.camera.aspect = width / height;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(width, height);
+            }
+            
+            animate() {
+                this.animationId = requestAnimationFrame(() => this.animate());
+                
+                if (this.controls) {
+                    this.controls.update();
+                }
+                
+                if (this.renderer && this.scene && this.camera) {
+                    this.renderer.render(this.scene, this.camera);
+                }
+            }
+            
+            // Load point cloud from Potree cloud.js format
+            async loadPointCloud(url, name = 'pointcloud') {
+                console.log('[Potree Overlay] Loading point cloud:', url);
+                
+                try {
+                    // Fetch the cloud.js metadata
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const metadata = await response.json();
+                    console.log('[Potree Overlay] Metadata loaded:', metadata);
+                    
+                    // Get base URL for loading octree data
+                    const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+                    const octreeDir = metadata.octreeDir || 'data';
+                    
+                    // Load the root node binary data
+                    const rootUrl = baseUrl + octreeDir + '/r/r.bin';
+                    console.log('[Potree Overlay] Loading root node from:', rootUrl);
+                    
+                    const binResponse = await fetch(rootUrl);
+                    if (!binResponse.ok) {
+                        throw new Error(`Failed to load root node: ${binResponse.status}`);
+                    }
+                    const buffer = await binResponse.arrayBuffer();
+                    
+                    // Parse point cloud data
+                    const pointCloud = this.parsePointCloudData(buffer, metadata);
+                    
+                    // Add to scene
+                    if (this.pointCloud) {
+                        this.scene.remove(this.pointCloud);
+                    }
+                    this.pointCloud = pointCloud;
+                    this.scene.add(pointCloud);
+                    
+                    // Fit camera to point cloud
+                    this.fitToPointCloud(metadata.boundingBox);
+                    
+                    console.log('[Potree Overlay] Point cloud loaded successfully');
+                    this.notifyParent('pointcloud-loaded', { name, url });
+                    
+                    // Load additional nodes for better detail
+                    this.loadAdditionalNodes(baseUrl, octreeDir, metadata);
+                    
+                    return pointCloud;
+                    
+                } catch (error) {
+                    console.error('[Potree Overlay] Failed to load point cloud:', error);
+                    this.notifyParent('pointcloud-error', { error: error.message });
+                    throw error;
+                }
+            }
+            
+            // Parse binary point cloud data
+            parsePointCloudData(buffer, metadata) {
+                const view = new DataView(buffer);
+                const pointAttributes = metadata.pointAttributes || ['POSITION_CARTESIAN', 'COLOR_PACKED'];
+                const scale = metadata.scale || 0.001;
+                const bbox = metadata.boundingBox;
+                
+                // Calculate bytes per point
+                let bytesPerPoint = 0;
+                let hasColor = false;
+                
+                for (const attr of pointAttributes) {
+                    switch (attr) {
+                        case 'POSITION_CARTESIAN':
+                            bytesPerPoint += 12; // 3 * int32
+                            break;
+                        case 'COLOR_PACKED':
+                            bytesPerPoint += 4; // RGBA packed
+                            hasColor = true;
+                            break;
+                        case 'RGBA':
+                            bytesPerPoint += 4;
+                            hasColor = true;
+                            break;
+                        case 'RGB':
+                            bytesPerPoint += 3;
+                            hasColor = true;
+                            break;
+                        case 'INTENSITY':
+                            bytesPerPoint += 2;
+                            break;
+                        case 'CLASSIFICATION':
+                            bytesPerPoint += 1;
+                            break;
+                        case 'NORMAL_SPHEREMAPPED':
+                            bytesPerPoint += 2;
+                            break;
+                        case 'NORMAL':
+                            bytesPerPoint += 12;
+                            break;
+                    }
+                }
+                
+                const numPoints = Math.floor(buffer.byteLength / bytesPerPoint);
+                console.log('[Potree Overlay] Parsing', numPoints, 'points, bytes per point:', bytesPerPoint);
+                
+                const positions = new Float32Array(numPoints * 3);
+                const colors = new Float32Array(numPoints * 3);
+                
+                let offset = 0;
+                for (let i = 0; i < numPoints; i++) {
+                    // Read position (int32 values)
+                    const x = view.getInt32(offset, true) * scale + bbox.lx;
+                    const y = view.getInt32(offset + 4, true) * scale + bbox.ly;
+                    const z = view.getInt32(offset + 8, true) * scale + bbox.lz;
+                    offset += 12;
+                    
+                    positions[i * 3] = x;
+                    positions[i * 3 + 1] = y;
+                    positions[i * 3 + 2] = z;
+                    
+                    // Read color if present
+                    if (hasColor) {
+                        const r = view.getUint8(offset) / 255;
+                        const g = view.getUint8(offset + 1) / 255;
+                        const b = view.getUint8(offset + 2) / 255;
+                        offset += 4; // COLOR_PACKED is 4 bytes
+                        
+                        colors[i * 3] = r;
+                        colors[i * 3 + 1] = g;
+                        colors[i * 3 + 2] = b;
+                    } else {
+                        // Default white color
+                        colors[i * 3] = 1;
+                        colors[i * 3 + 1] = 1;
+                        colors[i * 3 + 2] = 1;
+                    }
+                    
+                    // Skip other attributes
+                    for (const attr of pointAttributes) {
+                        if (attr === 'POSITION_CARTESIAN' || attr === 'COLOR_PACKED') continue;
+                        switch (attr) {
+                            case 'INTENSITY': offset += 2; break;
+                            case 'CLASSIFICATION': offset += 1; break;
+                            case 'NORMAL_SPHEREMAPPED': offset += 2; break;
+                            case 'NORMAL': offset += 12; break;
+                            case 'RGB': offset += 3; break;
+                            case 'RGBA': offset += 4; break;
+                        }
+                    }
+                }
+                
+                // Create geometry
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                
+                // Create material
+                const material = new THREE.PointsMaterial({
+                    size: 0.02,
+                    vertexColors: true,
+                    sizeAttenuation: true
+                });
+                
+                // Create points
+                const points = new THREE.Points(geometry, material);
+                points.name = 'potree-pointcloud';
+                
+                return points;
+            }
+            
+            // Load additional octree nodes for better detail
+            async loadAdditionalNodes(baseUrl, octreeDir, metadata) {
+                // Load first level nodes (r0-r7)
+                const nodeIds = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'];
+                
+                for (const nodeId of nodeIds) {
+                    try {
+                        const nodeUrl = baseUrl + octreeDir + '/r/' + nodeId + '.bin';
+                        const response = await fetch(nodeUrl);
+                        if (!response.ok) continue;
+                        
+                        const buffer = await response.arrayBuffer();
+                        const nodePoints = this.parsePointCloudData(buffer, metadata);
+                        nodePoints.name = 'potree-node-' + nodeId;
+                        this.scene.add(nodePoints);
+                        
+                    } catch (e) {
+                        // Node doesn't exist, skip
+                    }
+                }
+            }
+            
+            // Fit camera to bounding box
+            fitToPointCloud(bbox) {
+                if (!bbox) return;
+                
+                const center = new THREE.Vector3(
+                    (bbox.lx + bbox.ux) / 2,
+                    (bbox.ly + bbox.uy) / 2,
+                    (bbox.lz + bbox.uz) / 2
+                );
+                
+                const size = new THREE.Vector3(
+                    bbox.ux - bbox.lx,
+                    bbox.uy - bbox.ly,
+                    bbox.uz - bbox.lz
+                );
+                
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const distance = maxDim * 2;
+                
+                this.camera.position.set(
+                    center.x + distance,
+                    center.y + distance,
+                    center.z + distance
+                );
+                this.camera.lookAt(center);
+                this.controls.target.copy(center);
+                this.controls.update();
+            }
+            
+            // Set point size
+            setPointSize(size) {
+                if (this.pointCloud && this.pointCloud.material) {
+                    this.pointCloud.material.size = size;
+                }
+                
+                // Also update any additional nodes
+                this.scene.traverse((obj) => {
+                    if (obj instanceof THREE.Points && obj.material) {
+                        obj.material.size = size;
+                    }
+                });
+            }
+            
+            // Get camera state (returns full camera info for sync)
+            getCamera() {
+                return {
+                    position: { 
+                        x: this.camera.position.x, 
+                        y: this.camera.position.y, 
+                        z: this.camera.position.z 
+                    },
+                    target: { 
+                        x: this.controls.target.x, 
+                        y: this.controls.target.y, 
+                        z: this.controls.target.z 
+                    },
+                    up: {
+                        x: this.camera.up.x,
+                        y: this.camera.up.y,
+                        z: this.camera.up.z
+                    },
+                    fov: this.camera.fov
+                };
+            }
+            
+            // Set camera state (legacy method, uses applyCameraFromParent internally)
+            setCamera(position, target) {
+                this.applyCameraFromParent(position, target, null, null);
+            }
+            
+            // Unload point cloud
+            unload() {
+                this.scene.traverse((obj) => {
+                    if (obj instanceof THREE.Points) {
+                        if (obj.geometry) obj.geometry.dispose();
+                        if (obj.material) obj.material.dispose();
+                    }
+                });
+                
+                while (this.scene.children.length > 0) {
+                    const child = this.scene.children[0];
+                    if (child instanceof THREE.Points) {
+                        this.scene.remove(child);
+                    } else {
+                        break;
+                    }
+                }
+                
+                this.pointCloud = null;
+                this.notifyParent('pointcloud-unloaded', {});
+            }
+            
+            // Notify parent window
+            notifyParent(type, data) {
+                if (window.parent && window.parent !== window) {
+                    window.parent.postMessage({
+                        source: 'potree-overlay',
+                        type: type,
+                        data: data
+                    }, '*');
+                }
+            }
+            
+            // Destroy viewer
+            destroy() {
+                if (this.animationId) {
+                    cancelAnimationFrame(this.animationId);
+                }
+                
+                this.unload();
+                
+                if (this.renderer) {
+                    this.renderer.dispose();
+                    this.container.removeChild(this.renderer.domElement);
+                }
+                
+                this.scene = null;
+                this.camera = null;
+                this.renderer = null;
+                this.controls = null;
+            }
+        }
+        
+        // Global viewer instance
+        let viewer = null;
+        
+        // Parse URL parameters
+        function getUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                cloudUrl: params.get('cloud'),
+                autoLoad: params.get('autoload') !== 'false'
+            };
+        }
+        
+        // Handle messages from parent window
+        function handleParentMessage(event) {
+            if (!event.data) return;
+            
+            // ================================================================
+            // Handle camera sync messages (type: camera:update)
+            // ================================================================
+            if (event.data.type === 'camera:update' && event.data.source === 'forge') {
+                if (viewer) {
+                    const { position, target, up, fov } = event.data;
+                    viewer.applyCameraFromParent(position, target, up, fov);
+                }
+                return;
+            }
+            
+            // ================================================================
+            // Handle action-based messages (target: potree-overlay)
+            // ================================================================
+            if (event.data.target !== 'potree-overlay') return;
+            
+            const { action, params } = event.data;
+            console.log('[Potree Overlay] Received message:', action, params);
+            
+            switch (action) {
+                case 'load':
+                    if (viewer && params.url) {
+                        viewer.loadPointCloud(params.url, params.name);
+                    }
+                    break;
+                    
+                case 'unload':
+                    if (viewer) {
+                        viewer.unload();
+                    }
+                    break;
+                    
+                case 'setCamera':
+                    // Legacy setCamera action - also supports camera sync
+                    if (viewer) {
+                        viewer.applyCameraFromParent(
+                            params.position, 
+                            params.target, 
+                            params.up, 
+                            params.fov
+                        );
+                    }
+                    break;
+                    
+                case 'getCamera':
+                    if (viewer) {
+                        const camera = viewer.getCamera();
+                        viewer.notifyParent('camera', camera);
+                    }
+                    break;
+                    
+                case 'setPointSize':
+                    if (viewer) {
+                        viewer.setPointSize(params.size);
+                    }
+                    break;
+                    
+                default:
+                    console.warn('[Potree Overlay] Unknown action:', action);
+            }
+        }
+        
+        // Initialize on DOM ready
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('[Potree Overlay] Initializing...');
+            
+            const container = document.getElementById('potree-container');
+            viewer = new PotreeOverlayViewer(container);
+            
+            // Load from URL params if specified
+            const params = getUrlParams();
+            if (params.cloudUrl && params.autoLoad) {
+                viewer.loadPointCloud(params.cloudUrl);
+            }
+        });
+        
+        // Listen for parent messages
+        window.addEventListener('message', handleParentMessage);
+    </script>
+</body>
+</html>

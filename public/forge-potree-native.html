@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forge + Potree Native Integration</title>
+    
+    <!-- Forge Viewer -->
+    <link rel="stylesheet" href="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/style.min.css">
+    <script src="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/viewer3D.min.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            overflow: hidden;
+        }
+        
+        #viewer {
+            width: 100%;
+            height: 100vh;
+        }
+        
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(30, 30, 50, 0.95);
+            border-radius: 8px;
+            padding: 15px;
+            min-width: 320px;
+            max-width: 400px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            max-height: calc(100vh - 180px);
+            overflow-y: auto;
+        }
+        
+        #controls h2 {
+            font-size: 16px;
+            margin-bottom: 15px;
+            color: #4fc3f7;
+            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+        }
+        
+        #controls h3 {
+            font-size: 13px;
+            margin: 15px 0 10px 0;
+            color: #81d4fa;
+            border-bottom: 1px solid #333;
+            padding-bottom: 5px;
+        }
+        
+        .control-group {
+            margin-bottom: 12px;
+        }
+        
+        .control-group label {
+            display: block;
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+        
+        .control-group input[type="text"],
+        .control-group select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #2a2a4a;
+            color: #eee;
+            font-size: 12px;
+        }
+        
+        .control-group input[type="range"] {
+            width: 100%;
+            margin-top: 5px;
+        }
+        
+        .control-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .control-row input[type="number"] {
+            width: 70px;
+            padding: 5px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #2a2a4a;
+            color: #eee;
+            font-size: 12px;
+        }
+        
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .btn-primary {
+            background: #4fc3f7;
+            color: #000;
+        }
+        
+        .btn-primary:hover:not(:disabled) {
+            background: #81d4fa;
+        }
+        
+        .btn-secondary {
+            background: #555;
+            color: #eee;
+        }
+        
+        .btn-secondary:hover:not(:disabled) {
+            background: #666;
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: #fff;
+        }
+        
+        .btn-danger:hover:not(:disabled) {
+            background: #e57373;
+        }
+        
+        .btn-success {
+            background: #4caf50;
+            color: #fff;
+        }
+        
+        .btn-success:hover:not(:disabled) {
+            background: #81c784;
+        }
+        
+        .button-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        
+        #stats {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+            line-height: 1.6;
+        }
+        
+        #stats .stat-value {
+            color: #4fc3f7;
+        }
+        
+        #log {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            right: 10px;
+            max-height: 150px;
+            background: rgba(0, 0, 0, 0.8);
+            border-radius: 4px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 11px;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+        
+        #log .log-entry {
+            margin-bottom: 2px;
+            padding: 2px 0;
+        }
+        
+        #log .log-entry.info { color: #4fc3f7; }
+        #log .log-entry.warn { color: #ffb74d; }
+        #log .log-entry.error { color: #ef5350; }
+        #log .log-entry.success { color: #81c784; }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        #loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(26, 26, 46, 0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+        
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid #333;
+            border-top: 3px solid #4fc3f7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .transform-inputs {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 5px;
+            margin-top: 5px;
+        }
+        
+        .transform-inputs input {
+            padding: 5px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #2a2a4a;
+            color: #eee;
+            font-size: 11px;
+            text-align: center;
+        }
+        
+        .transform-inputs label {
+            font-size: 10px;
+            text-align: center;
+            color: #888;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+        
+        .status-badge.waiting { background: #555; color: #aaa; }
+        .status-badge.loading { background: #ff9800; color: #000; }
+        .status-badge.ready { background: #4caf50; color: #fff; }
+        .status-badge.error { background: #f44336; color: #fff; }
+        
+        .section-disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="viewer"></div>
+    
+    <div id="loading-overlay">
+        <div>
+            <div class="spinner"></div>
+            <p id="loading-text" style="margin-top: 15px; color: #4fc3f7;">Initializing Forge Viewer...</p>
+        </div>
+    </div>
+    
+    <div id="controls">
+        <h2>Forge + Potree Native</h2>
+        
+        <!-- SECTION 1: Model Selection -->
+        <h3>1. BIM Model <span id="model-status" class="status-badge waiting">Waiting</span></h3>
+        
+        <div class="control-group">
+            <label>Select Model</label>
+            <select id="model-select">
+                <option value="">-- Loading models... --</option>
+            </select>
+        </div>
+        
+        <div class="button-row">
+            <button id="btn-load-model" class="btn-primary" disabled>Load Model</button>
+        </div>
+        
+        <!-- SECTION 2: Point Cloud -->
+        <div id="pointcloud-section" class="section-disabled">
+            <h3>2. Point Cloud <span id="cloud-status" class="status-badge waiting">Waiting</span></h3>
+            
+            <div class="control-group">
+                <label>Converted Datasets</label>
+                <div style="display: flex; gap: 5px;">
+                    <select id="dataset-select" style="flex: 1;">
+                        <option value="">-- Select dataset --</option>
+                    </select>
+                    <button id="btn-refresh-datasets" class="btn-secondary" style="padding: 5px 10px;">↻</button>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <label>Or enter URL manually (cloud.js or metadata.json)</label>
+                <input type="text" id="cloud-url" value="/scripts/potree/data/New/lion_takanawa/cloud.js">
+            </div>
+            
+            <div class="control-group">
+                <label>Cloud Name</label>
+                <input type="text" id="cloud-name" value="lion">
+            </div>
+            
+            <div class="control-group">
+                <label>Position (X, Y, Z)</label>
+                <div class="transform-inputs">
+                    <input type="number" id="pos-x" value="0" step="0.5">
+                    <input type="number" id="pos-y" value="0" step="0.5">
+                    <input type="number" id="pos-z" value="0" step="0.5">
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <label>Scale: <span id="scale-value">1.0</span></label>
+                <input type="range" id="scale" min="0.1" max="50" step="0.1" value="1">
+            </div>
+            
+            <div class="control-group">
+                <label>Point Size: <span id="point-size-value">2</span></label>
+                <input type="range" id="point-size" min="1" max="10" step="0.5" value="2">
+            </div>
+            
+            <div class="control-group">
+                <label>Point Budget: <span id="point-budget-value">3,000,000</span></label>
+                <input type="range" id="point-budget" min="500000" max="10000000" step="500000" value="3000000">
+            </div>
+            
+            <div class="button-row">
+                <button id="btn-load-cloud" class="btn-primary">Load Point Cloud</button>
+                <button id="btn-toggle-cloud" class="btn-secondary" disabled>Toggle</button>
+                <button id="btn-unload-cloud" class="btn-danger" disabled>Unload</button>
+            </div>
+            
+            <div class="button-row">
+                <button id="btn-fit-cloud" class="btn-secondary" disabled>Fit to Cloud</button>
+                <button id="btn-fit-all" class="btn-secondary">Fit All</button>
+            </div>
+        </div>
+        
+        <!-- SECTION 3: Statistics -->
+        <h3>3. Statistics</h3>
+        <div id="stats">
+            <div>Model: <span class="stat-value" id="stat-model">Not loaded</span></div>
+            <div>Points Rendered: <span class="stat-value" id="stat-points">0</span></div>
+            <div>Nodes Visible: <span class="stat-value" id="stat-nodes">0</span></div>
+            <div>Clouds Loaded: <span class="stat-value" id="stat-clouds">0</span></div>
+            <div>Point Budget: <span class="stat-value" id="stat-budget">3,000,000</span></div>
+        </div>
+    </div>
+    
+    <div id="log"></div>
+    
+    <!-- Extension Scripts -->
+    <script src="/scripts/potree/Potree2Loader.js"></script>
+    <script src="/scripts/potree/ForgePotreePointCloudExtension.js"></script>
+    
+    <script>
+        // ====================================================================
+        // GLOBAL STATE
+        // ====================================================================
+        
+        let viewer = null;
+        let potreeExt = null;
+        let modelLoaded = false;
+        let currentModelName = null;
+        
+        // ====================================================================
+        // LOGGING
+        // ====================================================================
+        
+        const logContainer = document.getElementById('log');
+        const maxLogEntries = 50;
+        
+        function addLog(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logContainer.appendChild(entry);
+            
+            while (logContainer.children.length > maxLogEntries) {
+                logContainer.removeChild(logContainer.firstChild);
+            }
+            
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+        
+        // Capture ForgePotree logs
+        const originalLog = console.log;
+        const originalWarn = console.warn;
+        const originalError = console.error;
+        
+        console.log = function(...args) {
+            originalLog.apply(console, args);
+            if (args[0] && typeof args[0] === 'string' && args[0].includes('[ForgePotree]')) {
+                addLog(args.join(' '), 'info');
+            }
+        };
+        
+        console.warn = function(...args) {
+            originalWarn.apply(console, args);
+            if (args[0] && typeof args[0] === 'string' && args[0].includes('[ForgePotree]')) {
+                addLog(args.join(' '), 'warn');
+            }
+        };
+        
+        console.error = function(...args) {
+            originalError.apply(console, args);
+            addLog(args.join(' '), 'error');
+        };
+        
+        // ====================================================================
+        // STATUS BADGES
+        // ====================================================================
+        
+        function setModelStatus(status) {
+            const badge = document.getElementById('model-status');
+            badge.className = `status-badge ${status}`;
+            badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+        
+        function setCloudStatus(status) {
+            const badge = document.getElementById('cloud-status');
+            badge.className = `status-badge ${status}`;
+            badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+        
+        // ====================================================================
+        // API - Get Access Token
+        // ====================================================================
+        
+        async function getAccessToken() {
+            try {
+                const resp = await fetch('/api/auth/token');
+                if (!resp.ok) {
+                    throw new Error(await resp.text());
+                }
+                const { access_token, expires_in } = await resp.json();
+                return { access_token, expires_in };
+            } catch (err) {
+                addLog('Could not obtain access token: ' + err.message, 'error');
+                throw err;
+            }
+        }
+        
+        // ====================================================================
+        // API - Get Models
+        // ====================================================================
+        
+        async function getModels() {
+            try {
+                const resp = await fetch('/api/data/models');
+                if (!resp.ok) {
+                    throw new Error(await resp.text());
+                }
+                return await resp.json();
+            } catch (err) {
+                addLog('Could not fetch models: ' + err.message, 'error');
+                throw err;
+            }
+        }
+        
+        // ====================================================================
+        // API - Get Converted Datasets
+        // ====================================================================
+        
+        async function getDatasets() {
+            try {
+                const resp = await fetch('/api/las/datasets');
+                if (!resp.ok) {
+                    throw new Error(await resp.text());
+                }
+                return await resp.json();
+            } catch (err) {
+                addLog('Could not fetch datasets: ' + err.message, 'warn');
+                return [];
+            }
+        }
+        
+        async function populateDatasets() {
+            const select = document.getElementById('dataset-select');
+            
+            try {
+                const datasets = await getDatasets();
+                
+                select.innerHTML = '<option value="">-- Select dataset --</option>';
+                
+                for (const dataset of datasets) {
+                    const option = document.createElement('option');
+                    option.value = dataset.cloudJsUrl;
+                    const formatLabel = dataset.potreeFormat === '2.0' ? '[2.0]' : '[1.x]';
+                    option.textContent = `${dataset.datasetId.substring(0, 8)}... ${formatLabel}`;
+                    option.dataset.name = dataset.datasetId;
+                    select.appendChild(option);
+                }
+                
+                if (datasets.length > 0) {
+                    addLog(`Found ${datasets.length} converted datasets`, 'info');
+                }
+                
+            } catch (err) {
+                select.innerHTML = '<option value="">-- No datasets --</option>';
+            }
+        }
+        
+        // ====================================================================
+        // VIEWER INITIALIZATION
+        // ====================================================================
+        
+        async function initViewer() {
+            return new Promise((resolve, reject) => {
+                const options = {
+                    env: 'AutodeskProduction',
+                    getAccessToken: async function(callback) {
+                        try {
+                            const { access_token, expires_in } = await getAccessToken();
+                            callback(access_token, expires_in);
+                        } catch (err) {
+                            reject(err);
+                        }
+                    }
+                };
+                
+                Autodesk.Viewing.Initializer(options, () => {
+                    const container = document.getElementById('viewer');
+                    
+                    const config = {
+                        extensions: ['ForgePotreePointCloudExtension']
+                    };
+                    
+                    viewer = new Autodesk.Viewing.GuiViewer3D(container, config);
+                    
+                    const startResult = viewer.start();
+                    if (startResult !== 0) {
+                        reject(new Error('Viewer failed to start'));
+                        return;
+                    }
+                    
+                    // Configure viewer
+                    viewer.setTheme('light-theme');
+                    viewer.setBackgroundColor(240, 240, 245, 240, 240, 245);
+                    viewer.setLightPreset(0);
+                    
+                    // Wait for extension to load
+                    viewer.addEventListener(Autodesk.Viewing.EXTENSION_LOADED_EVENT, (e) => {
+                        if (e.extensionId === 'ForgePotreePointCloudExtension') {
+                            potreeExt = viewer.getExtension('ForgePotreePointCloudExtension');
+                            addLog('ForgePotreePointCloudExtension ready', 'success');
+                        }
+                    });
+                    
+                    resolve(viewer);
+                });
+            });
+        }
+        
+        // ====================================================================
+        // LOAD BIM MODEL
+        // ====================================================================
+        
+        function loadModel(urn) {
+            return new Promise((resolve, reject) => {
+                setModelStatus('loading');
+                document.getElementById('loading-text').textContent = 'Loading BIM model...';
+                document.getElementById('loading-overlay').classList.remove('hidden');
+                
+                function onDocumentLoadSuccess(doc) {
+                    const viewable = doc.getRoot().getDefaultGeometry();
+                    if (!viewable) {
+                        reject(new Error('No viewable geometry found'));
+                        return;
+                    }
+                    
+                    viewer.loadDocumentNode(doc, viewable)
+                        .then(model => {
+                            addLog('BIM model loaded successfully', 'success');
+                            setModelStatus('ready');
+                            modelLoaded = true;
+                            
+                            // Enable point cloud section
+                            document.getElementById('pointcloud-section').classList.remove('section-disabled');
+                            
+                            // Fit to view
+                            viewer.fitToView();
+                            
+                            // Hide loading overlay
+                            document.getElementById('loading-overlay').classList.add('hidden');
+                            
+                            resolve(model);
+                        })
+                        .catch(err => {
+                            setModelStatus('error');
+                            reject(err);
+                        });
+                }
+                
+                function onDocumentLoadFailure(code, message, errors) {
+                    setModelStatus('error');
+                    document.getElementById('loading-overlay').classList.add('hidden');
+                    const errorMsg = `Could not load document (code: ${code}, message: ${message})`;
+                    addLog(errorMsg, 'error');
+                    reject(new Error(errorMsg));
+                }
+                
+                Autodesk.Viewing.Document.load('urn:' + urn, onDocumentLoadSuccess, onDocumentLoadFailure);
+            });
+        }
+        
+        // ====================================================================
+        // POPULATE MODELS DROPDOWN
+        // ====================================================================
+        
+        async function populateModels() {
+            const select = document.getElementById('model-select');
+            const loadBtn = document.getElementById('btn-load-model');
+            
+            try {
+                const models = await getModels();
+                
+                select.innerHTML = '<option value="">-- Select a model --</option>';
+                
+                for (const model of models) {
+                    const option = document.createElement('option');
+                    option.value = model.urn;
+                    option.textContent = model.name;
+                    select.appendChild(option);
+                }
+                
+                if (models.length > 0) {
+                    loadBtn.disabled = false;
+                }
+                
+                addLog(`Found ${models.length} models`, 'info');
+                
+            } catch (err) {
+                select.innerHTML = '<option value="">-- Error loading models --</option>';
+                addLog('Failed to load models list', 'error');
+            }
+        }
+        
+        // ====================================================================
+        // UI CONTROLS
+        // ====================================================================
+        
+        function setupControls() {
+            // Model selection
+            const modelSelect = document.getElementById('model-select');
+            const loadModelBtn = document.getElementById('btn-load-model');
+            
+            modelSelect.addEventListener('change', () => {
+                loadModelBtn.disabled = !modelSelect.value;
+            });
+            
+            loadModelBtn.addEventListener('click', async () => {
+                const urn = modelSelect.value;
+                if (!urn) return;
+                
+                try {
+                    currentModelName = modelSelect.options[modelSelect.selectedIndex].text;
+                    await loadModel(urn);
+                    document.getElementById('stat-model').textContent = currentModelName;
+                } catch (err) {
+                    addLog('Failed to load model: ' + err.message, 'error');
+                    document.getElementById('loading-overlay').classList.add('hidden');
+                }
+            });
+            
+            // Dataset selection
+            const datasetSelect = document.getElementById('dataset-select');
+            const cloudUrlInput = document.getElementById('cloud-url');
+            const cloudNameInput = document.getElementById('cloud-name');
+            
+            datasetSelect.addEventListener('change', () => {
+                if (datasetSelect.value) {
+                    cloudUrlInput.value = datasetSelect.value;
+                    const option = datasetSelect.options[datasetSelect.selectedIndex];
+                    if (option.dataset.name) {
+                        cloudNameInput.value = option.dataset.name.substring(0, 8);
+                    }
+                }
+            });
+            
+            document.getElementById('btn-refresh-datasets').addEventListener('click', () => {
+                populateDatasets();
+            });
+            
+            // Scale slider
+            const scaleSlider = document.getElementById('scale');
+            const scaleValue = document.getElementById('scale-value');
+            scaleSlider.addEventListener('input', () => {
+                scaleValue.textContent = parseFloat(scaleSlider.value).toFixed(1);
+            });
+            
+            // Point size slider
+            const pointSizeSlider = document.getElementById('point-size');
+            const pointSizeValue = document.getElementById('point-size-value');
+            pointSizeSlider.addEventListener('input', () => {
+                pointSizeValue.textContent = pointSizeSlider.value;
+                if (potreeExt) {
+                    const cloudName = document.getElementById('cloud-name').value;
+                    potreeExt.setPointSize(cloudName, parseFloat(pointSizeSlider.value));
+                }
+            });
+            
+            // Point budget slider
+            const budgetSlider = document.getElementById('point-budget');
+            const budgetValue = document.getElementById('point-budget-value');
+            budgetSlider.addEventListener('input', () => {
+                const budget = parseInt(budgetSlider.value);
+                budgetValue.textContent = budget.toLocaleString();
+                if (potreeExt) {
+                    potreeExt.setPointBudget(budget);
+                }
+            });
+            
+            // Load point cloud button
+            document.getElementById('btn-load-cloud').addEventListener('click', async () => {
+                if (!potreeExt || !modelLoaded) {
+                    addLog('Please load a BIM model first', 'warn');
+                    return;
+                }
+                
+                const url = document.getElementById('cloud-url').value;
+                const name = document.getElementById('cloud-name').value;
+                const scale = parseFloat(document.getElementById('scale').value);
+                const posX = parseFloat(document.getElementById('pos-x').value);
+                const posY = parseFloat(document.getElementById('pos-y').value);
+                const posZ = parseFloat(document.getElementById('pos-z').value);
+                
+                try {
+                    setCloudStatus('loading');
+                    addLog(`Loading point cloud: ${url}`, 'info');
+                    
+                    const cloud = await potreeExt.loadPointCloud(name, url, {
+                        position: new THREE.Vector3(posX, posY, posZ),
+                        scale: scale
+                    });
+                    
+                    setCloudStatus('ready');
+                    addLog(`Point cloud loaded: ${name}`, 'success');
+                    
+                    // Enable control buttons
+                    document.getElementById('btn-toggle-cloud').disabled = false;
+                    document.getElementById('btn-unload-cloud').disabled = false;
+                    document.getElementById('btn-fit-cloud').disabled = false;
+                    
+                    updateStats();
+                    
+                } catch (err) {
+                    setCloudStatus('error');
+                    addLog(`Failed to load point cloud: ${err.message}`, 'error');
+                }
+            });
+            
+            // Toggle button
+            document.getElementById('btn-toggle-cloud').addEventListener('click', () => {
+                if (!potreeExt) return;
+                const name = document.getElementById('cloud-name').value;
+                potreeExt.togglePointCloud(name);
+                updateStats();
+            });
+            
+            // Unload button
+            document.getElementById('btn-unload-cloud').addEventListener('click', () => {
+                if (!potreeExt) return;
+                const name = document.getElementById('cloud-name').value;
+                potreeExt.unloadPointCloud(name);
+                setCloudStatus('waiting');
+                
+                document.getElementById('btn-toggle-cloud').disabled = true;
+                document.getElementById('btn-unload-cloud').disabled = true;
+                document.getElementById('btn-fit-cloud').disabled = true;
+                
+                updateStats();
+            });
+            
+            // Fit to cloud button
+            document.getElementById('btn-fit-cloud').addEventListener('click', () => {
+                if (!potreeExt) return;
+                const name = document.getElementById('cloud-name').value;
+                const clouds = potreeExt.clouds;
+                if (clouds.has(name)) {
+                    fitToCloud(clouds.get(name));
+                }
+            });
+            
+            // Fit all button
+            document.getElementById('btn-fit-all').addEventListener('click', () => {
+                if (viewer) {
+                    viewer.fitToView();
+                }
+            });
+        }
+        
+        function fitToCloud(cloud) {
+            if (!cloud || !viewer) return;
+            
+            const bb = cloud.boundingBox;
+            const box = new THREE.Box3(bb.min.clone(), bb.max.clone());
+            box.applyMatrix4(cloud.matrixWorld);
+            
+            const center = new THREE.Vector3();
+            box.getCenter(center);
+            
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z);
+            
+            const distance = maxDim * 2;
+            const position = center.clone().add(new THREE.Vector3(distance, distance, distance));
+            
+            viewer.navigation.setPosition(position);
+            viewer.navigation.setTarget(center);
+            
+            addLog(`Camera fit to point cloud`, 'info');
+        }
+        
+        function updateStats() {
+            if (!potreeExt) return;
+            
+            const stats = potreeExt.getStats();
+            
+            document.getElementById('stat-points').textContent = stats.totalPoints.toLocaleString();
+            document.getElementById('stat-nodes').textContent = stats.totalNodes;
+            document.getElementById('stat-clouds').textContent = stats.cloudsLoaded;
+            document.getElementById('stat-budget').textContent = stats.pointBudget.toLocaleString();
+        }
+        
+        // Update stats periodically
+        setInterval(updateStats, 1000);
+        
+        // ====================================================================
+        // INITIALIZATION
+        // ====================================================================
+        
+        async function init() {
+            try {
+                addLog('Initializing Forge Viewer...', 'info');
+                
+                await initViewer();
+                addLog('Viewer initialized', 'success');
+                
+                // Populate models
+                await populateModels();
+                
+                // Populate converted datasets
+                await populateDatasets();
+                
+                // Setup controls
+                setupControls();
+                
+                // Hide loading overlay
+                document.getElementById('loading-overlay').classList.add('hidden');
+                addLog('Ready. Please select and load a BIM model first.', 'info');
+                
+            } catch (err) {
+                addLog(`Initialization failed: ${err.message}`, 'error');
+                document.getElementById('loading-text').textContent = 'Initialization failed: ' + err.message;
+                console.error(err);
+            }
+        }
+        
+        // Start
+        init();
+    </script>
+</body>
+</html>
