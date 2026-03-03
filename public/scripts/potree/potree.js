@@ -190,6 +190,12 @@
 			while (stack.length > 0)
 			{
 				var current = stack.pop();
+				
+				// SAFE LOD: Don't dispose nodes that are currently visible or recently used
+				if(current.sceneNode && current.sceneNode.visible)
+				{
+					continue;
+				}
 
 				current.dispose();
 				this.remove(current);
@@ -322,9 +328,9 @@
 	{
 		debug: {},
 		workerPath: getBasePath(),
-		maxNodesLoadGPUFrame: 20,
+		maxNodesLoadGPUFrame: 50,
 		maxDEMLevel: 0,
-		maxNodesLoading: navigator.hardwareConcurrency !== undefined ? navigator.hardwareConcurrency : 4,
+		maxNodesLoading: navigator.hardwareConcurrency !== undefined ? Math.max(navigator.hardwareConcurrency * 2, 8) : 8,
 		pointLoadLimit: 1e10,
 		numNodesLoading: 0,
 		measureTimings: false,
@@ -6139,7 +6145,7 @@ void main()
 			this.boundingSphere = this.boundingBox.getBoundingSphere(new THREE.Sphere());
 			this.material = material || new PointCloudMaterial();
 			this.visiblePointsTarget = 2 * 1000 * 1000;
-			this.minimumNodePixelSize = 150;
+			this.minimumNodePixelSize = 30;
 			this.level = 0;
 			this.position.copy(geometry.offset);
 			this.updateMatrix();
@@ -7225,7 +7231,7 @@ void main()
 			}
 
 			this.visiblePointsTarget = 2 * 1000 * 1000;
-			this.minimumNodePixelSize = 150;
+			this.minimumNodePixelSize = 30;
 
 			this.position.sub(geometry.offset);
 			this.updateMatrix();
@@ -8551,6 +8557,9 @@ void main()
 		var visibleNodes = [];
 		var unloadedGeometry = [];
 		var lowestSpacing = Infinity;
+		
+		// SAFE LOD: Track parents that need to stay visible until children load
+		var parentsWaitingForChildren = new Map(); // node -> Set of children needed
 
 		//Calculate object space frustum and cam pos and setup priority queue
 		var structures = updateVisibilityStructures(pointclouds, camera);
@@ -8622,7 +8631,14 @@ void main()
 			var level = node.getLevel();
 
 			var visible = insideFrustum;
-			visible = visible && !(numVisiblePointsInPointclouds.get(pointcloud) + node.getNumPoints() > pointcloud.pointBudget);
+			var pointsInCloud = numVisiblePointsInPointclouds.get(pointcloud);
+			var wouldExceedBudget = pointsInCloud + node.getNumPoints() > pointcloud.pointBudget;
+			
+			// SAFE LOD: Allow slight budget overflow (20%) for visible nodes to prevent holes
+			var budgetOverflowAllowed = pointsInCloud + node.getNumPoints() < pointcloud.pointBudget * 1.2;
+			var nodeWasVisible = node.sceneNode && node.sceneNode.visible;
+			
+			visible = visible && (!wouldExceedBudget || (nodeWasVisible && budgetOverflowAllowed));
 			visible = visible && level < maxLevel;
 
 			//TODO <CLIPPING TASKS>
@@ -8767,10 +8783,14 @@ void main()
 
 			//Add child nodes to priorityQueue
 			var children = node.getChildren();
+			var childrenSelectedCount = 0;
+			var childrenLoadedCount = 0;
+			
 			for(var i = 0; i < children.length; i++)
 			{
 				var child = children[i];
 				var weight = 0;
+				var shouldAddChild = true;
 
 				//Perspective camera
 				if(camera.isPerspectiveCamera)
@@ -8788,7 +8808,15 @@ void main()
 					//If pixel radius bellow minimum discard
 					if(screenPixelRadius < pointcloud.minimumNodePixelSize)
 					{
-						continue;
+						shouldAddChild = false;
+					}
+					else
+					{
+						childrenSelectedCount++;
+						if(child.isLoaded && child.isLoaded())
+						{
+							childrenLoadedCount++;
+						}
 					}
 
 					weight = screenPixelRadius;
@@ -8807,15 +8835,60 @@ void main()
 					var distance = child.getBoundingSphere(new THREE.Sphere()).center.distanceTo(camObjPos);
 					var diagonal = bb.max.clone().sub(bb.min).length();
 					weight = diagonal / distance;
+					childrenSelectedCount++;
+					if(child.isLoaded && child.isLoaded())
+					{
+						childrenLoadedCount++;
+					}
 				}
 
-				priorityQueue.push(
+				if(shouldAddChild)
 				{
-					pointcloud: element.pointcloud,
-					node: child,
-					parent: node,
-					weight: weight
-				});
+					priorityQueue.push(
+					{
+						pointcloud: element.pointcloud,
+						node: child,
+						parent: node,
+						weight: weight
+					});
+				}
+			}
+			
+			// SAFE LOD: If we're selecting children but they're not all loaded,
+			// mark this parent as needing to stay visible
+			if(childrenSelectedCount > 0 && childrenLoadedCount < childrenSelectedCount)
+			{
+				if(!parentsWaitingForChildren.has(node))
+				{
+					parentsWaitingForChildren.set(node, {
+						selected: childrenSelectedCount,
+						loaded: childrenLoadedCount,
+						pointcloud: pointcloud
+					});
+				}
+			}
+		}
+
+		// SAFE LOD: Ensure parents stay visible while children are loading
+		for(var [parentNode, info] of parentsWaitingForChildren)
+		{
+			if(parentNode.isTreeNode && parentNode.isTreeNode() && parentNode.sceneNode)
+			{
+				// Check if parent is not already in visible nodes
+				var isInVisibleNodes = visibleNodes.indexOf(parentNode) >= 0;
+				
+				if(!isInVisibleNodes && parentNode.sceneNode)
+				{
+					// Keep parent visible
+					parentNode.sceneNode.visible = true;
+					parentNode.sceneNode.material = info.pointcloud.material;
+					
+					visibleNodes.push(parentNode);
+					info.pointcloud.visibleNodes.push(parentNode);
+					
+					// Update point count
+					numVisiblePoints += parentNode.getNumPoints ? parentNode.getNumPoints() : 0;
+				}
 			}
 		}
 
@@ -8828,7 +8901,9 @@ void main()
 			pointcloud.dem.update(updatingNodes);
 		}
 		
-		for(var i = 0; i < Math.min(Global.maxNodesLoading, unloadedGeometry.length); i++)
+		// Load more nodes - prioritize loading to prevent holes
+		var nodesToLoadCount = Math.min(Global.maxNodesLoading * 2, unloadedGeometry.length);
+		for(var i = 0; i < nodesToLoadCount; i++)
 		{
 			unloadedGeometry[i].load();
 		}
@@ -10247,6 +10322,103 @@ void main()
 		}
 	}
 
+	// ==========================================================================
+	// SAFE LOD DEBUG UTILITIES
+	// ==========================================================================
+	
+	/**
+	 * Debug utility to diagnose LOD issues
+	 * Usage: Potree.debugLOD(pointclouds)
+	 */
+	function debugLOD(pointclouds)
+	{
+		console.log('=== POTREE LOD DEBUG ===');
+		console.log('Global config:');
+		console.log('  maxNodesLoading:', Global.maxNodesLoading);
+		console.log('  maxNodesLoadGPUFrame:', Global.maxNodesLoadGPUFrame);
+		console.log('  numNodesLoading:', Global.numNodesLoading);
+		console.log('  pointLoadLimit:', Global.pointLoadLimit);
+		
+		for(var pc of pointclouds)
+		{
+			console.log('\nPointCloud:', pc.name || 'unnamed');
+			console.log('  pointBudget:', pc.pointBudget);
+			console.log('  minimumNodePixelSize:', pc.minimumNodePixelSize);
+			console.log('  visibleNodes:', pc.visibleNodes ? pc.visibleNodes.length : 0);
+			console.log('  numVisiblePoints:', pc.numVisiblePoints);
+			
+			if(pc.visibleNodes)
+			{
+				var loadedCount = 0;
+				var unloadedCount = 0;
+				var visibleCount = 0;
+				
+				for(var node of pc.visibleNodes)
+				{
+					if(node.isLoaded && node.isLoaded()) loadedCount++;
+					else unloadedCount++;
+					if(node.sceneNode && node.sceneNode.visible) visibleCount++;
+				}
+				
+				console.log('  loadedNodes:', loadedCount);
+				console.log('  unloadedNodes:', unloadedCount);
+				console.log('  actuallyVisible:', visibleCount);
+			}
+		}
+		
+		console.log('\nLRU Cache:');
+		console.log('  numPoints:', Global.lru ? Global.lru.numPoints : 'N/A');
+		console.log('  elements:', Global.lru ? Global.lru.elements : 'N/A');
+		console.log('========================');
+	}
+	
+	/**
+	 * Set minimum node pixel size (lower = more detail, more nodes loaded)
+	 * Recommended: 20-100
+	 */
+	function setMinimumNodePixelSize(pointclouds, size)
+	{
+		for(var pc of pointclouds)
+		{
+			pc.minimumNodePixelSize = size;
+		}
+		console.log('[Potree] minimumNodePixelSize set to:', size);
+	}
+	
+	/**
+	 * Set point budget (higher = more points rendered)
+	 * Recommended: 1000000 - 10000000
+	 */
+	function setPointBudgetAll(pointclouds, budget)
+	{
+		for(var pc of pointclouds)
+		{
+			pc.pointBudget = budget;
+		}
+		console.log('[Potree] pointBudget set to:', budget);
+	}
+	
+	/**
+	 * Force refresh visibility (useful after changing settings)
+	 */
+	function forceRefreshVisibility(pointclouds, camera, renderer)
+	{
+		// Reset visible state
+		for(var pc of pointclouds)
+		{
+			pc.visibleNodes = [];
+			pc.numVisibleNodes = 0;
+			pc.numVisiblePoints = 0;
+		}
+		
+		// Trigger update
+		return updatePointClouds(pointclouds, camera, renderer);
+	}
+
+	exports.debugLOD = debugLOD;
+	exports.setMinimumNodePixelSize = setMinimumNodePixelSize;
+	exports.setPointBudgetAll = setPointBudgetAll;
+	exports.forceRefreshVisibility = forceRefreshVisibility;
 	exports.AttributeLocations = AttributeLocations;
 	exports.BasicGroup = BasicGroup;
 	exports.BinaryHeap = BinaryHeap;

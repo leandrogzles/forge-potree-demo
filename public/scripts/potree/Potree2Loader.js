@@ -135,6 +135,11 @@
             this.visible = false;
             this.distance = Infinity;
             this.screenSize = 0;
+            
+            // LOD state tracking
+            this.isInScene = false;
+            this.shouldRefine = false;
+            this.lastVisibleTime = 0;
         }
 
         _computeBoundingBox() {
@@ -184,43 +189,103 @@
     // ========================================================================
     // POTREE 2.0 HIERARCHY PARSER
     // ========================================================================
+    
+    // Node types in Potree 2.0
+    const NODE_TYPE = {
+        NORMAL: 0,  // Regular inner node
+        LEAF: 1,    // Leaf node (no children)
+        PROXY: 2    // Lazy load marker - children at different offset
+    };
 
     class Potree2HierarchyParser {
         constructor(cloud) {
             this.cloud = cloud;
+            this.bytesPerNode = 22;
         }
 
         parse(hierarchyBuffer) {
             const view = new DataView(hierarchyBuffer);
-            const bytesPerNode = 22;
-            const numNodes = hierarchyBuffer.byteLength / bytesPerNode;
+            const bufferSize = hierarchyBuffer.byteLength;
+            const maxNodes = Math.floor(bufferSize / this.bytesPerNode);
             
-            log(`Parsing hierarchy: ${numNodes} nodes, ${hierarchyBuffer.byteLength} bytes`);
+            log(`Parsing hierarchy: buffer=${bufferSize} bytes, max ${maxNodes} nodes`);
+            log(`Hierarchy config:`, this.cloud.hierarchy);
             
             const nodes = new Map();
             const root = new Potree2Node('r', this.cloud);
             nodes.set('r', root);
             
-            const stack = [{ node: root, offset: 0 }];
-            let nodesProcessed = 0;
+            // Potree 2.0 hierarchy is depth-first encoded
+            // Parse recursively starting at offset 0
+            const result = this._parseNodeRecursive(view, 0, root, nodes, bufferSize);
             
-            let currentOffset = 0;
+            log(`Hierarchy parsed: ${nodes.size} nodes, consumed ${result.nextOffset} bytes`);
             
-            while (stack.length > 0 && currentOffset < hierarchyBuffer.byteLength) {
-                const { node } = stack.shift();
-                
-                const type = view.getUint8(currentOffset);
-                const childMask = view.getUint8(currentOffset + 1);
-                const numPoints = view.getUint32(currentOffset + 2, true);
-                const byteOffset = Number(view.getBigInt64(currentOffset + 6, true));
-                const byteSize = Number(view.getBigInt64(currentOffset + 14, true));
-                
-                currentOffset += bytesPerNode;
-                nodesProcessed++;
-                
-                node.numPoints = numPoints;
+            // Log level distribution
+            const levelCounts = {};
+            let maxLevel = 0;
+            for (const [name, node] of nodes) {
+                levelCounts[node.level] = (levelCounts[node.level] || 0) + 1;
+                maxLevel = Math.max(maxLevel, node.level);
+            }
+            log(`Nodes per level:`, levelCounts);
+            log(`Max depth: ${maxLevel}`);
+            
+            return { root, nodes };
+        }
+        
+        /**
+         * Recursively parse node and all its children (depth-first)
+         * Returns { nextOffset } - the offset after this node's subtree
+         */
+        _parseNodeRecursive(view, offset, node, nodes, bufferSize) {
+            if (offset + this.bytesPerNode > bufferSize) {
+                warn(`Offset ${offset} exceeds buffer for node ${node.name}`);
+                return { nextOffset: offset };
+            }
+            
+            // Read node data
+            const type = view.getUint8(offset);
+            const childMask = view.getUint8(offset + 1);
+            const numPoints = view.getUint32(offset + 2, true);
+            const byteOffset = Number(view.getBigInt64(offset + 6, true));
+            const byteSize = Number(view.getBigInt64(offset + 14, true));
+            
+            // Log first few nodes and any PROXY nodes
+            if (nodes.size < 20 || type === NODE_TYPE.PROXY) {
+                const typeNames = ['NORMAL', 'LEAF', 'PROXY'];
+                log(`Parse ${node.name}: type=${typeNames[type] || type}, mask=${childMask.toString(2).padStart(8,'0')}, pts=${numPoints}, offset=${byteOffset}, size=${byteSize}`);
+            }
+            
+            node.numPoints = numPoints;
+            node.nodeType = type;
+            
+            // For PROXY nodes: byteOffset/byteSize point to hierarchy.bin chunk
+            // For NORMAL/LEAF: byteOffset/byteSize point to octree.bin data
+            if (type === NODE_TYPE.PROXY) {
+                // Store hierarchy chunk location for lazy loading
+                node.hierarchyByteOffset = byteOffset;
+                node.hierarchyByteSize = byteSize;
+                // Point data location will be determined when loading children
+                node.byteOffset = 0;
+                node.byteSize = 0;
+            } else {
                 node.byteOffset = byteOffset;
                 node.byteSize = byteSize;
+            }
+            
+            let currentOffset = offset + this.bytesPerNode;
+            
+            // Count children
+            let childCount = 0;
+            for (let i = 0; i < 8; i++) {
+                if (childMask & (1 << i)) childCount++;
+            }
+            
+            if (type === NODE_TYPE.PROXY && childCount > 0) {
+                // PROXY: children are at a different location in the buffer
+                // Parse children from the proxy's hierarchy chunk
+                let childOffset = byteOffset;
                 
                 for (let i = 0; i < 8; i++) {
                     if (childMask & (1 << i)) {
@@ -228,14 +293,30 @@
                         const child = new Potree2Node(childName, this.cloud, node);
                         node.addChild(i, child);
                         nodes.set(childName, child);
-                        stack.push({ node: child, offset: currentOffset });
+                        
+                        // Recursively parse child at the proxy offset
+                        const result = this._parseNodeRecursive(view, childOffset, child, nodes, bufferSize);
+                        childOffset = result.nextOffset;
+                    }
+                }
+                // Note: currentOffset stays the same since children are elsewhere
+            } else if (childCount > 0) {
+                // NORMAL or LEAF with children: children follow inline
+                for (let i = 0; i < 8; i++) {
+                    if (childMask & (1 << i)) {
+                        const childName = node.getChildName(i);
+                        const child = new Potree2Node(childName, this.cloud, node);
+                        node.addChild(i, child);
+                        nodes.set(childName, child);
+                        
+                        // Parse child recursively - it continues right after parent
+                        const result = this._parseNodeRecursive(view, currentOffset, child, nodes, bufferSize);
+                        currentOffset = result.nextOffset;
                     }
                 }
             }
             
-            log(`Hierarchy parsed: ${nodesProcessed} nodes processed`);
-            
-            return { root, nodes };
+            return { nextOffset: currentOffset };
         }
     }
 
@@ -259,7 +340,9 @@
             
             const promise = (async () => {
                 try {
-                    if (node.byteSize === 0 || node.numPoints === 0) {
+                    // Skip PROXY nodes (they don't have point data directly)
+                    // Skip nodes with no data
+                    if (node.nodeType === NODE_TYPE.PROXY || node.byteSize === 0 || node.numPoints === 0) {
                         node.loaded = true;
                         node.loading = false;
                         return;
@@ -372,11 +455,15 @@
             node.geometry.boundingSphere = new THREE.Sphere();
             node.geometry.boundingBox.getBoundingSphere(node.geometry.boundingSphere);
             
+            // Create material with optimized settings for LOD transitions
             const PointsMaterialClass = THREE.PointsMaterial || THREE.PointCloudMaterial;
             node.material = new PointsMaterialClass({
-                size: 2,
-                sizeAttenuation: false,
-                vertexColors: true
+                size: 3,                    // Slightly larger points fill gaps better
+                sizeAttenuation: true,      // Points scale with distance
+                vertexColors: true,
+                depthWrite: true,           // Allow proper depth sorting
+                depthTest: true,
+                transparent: false
             });
             
             const PointsClass = THREE.Points || THREE.PointCloud;
@@ -412,8 +499,17 @@
     }
 
     // ========================================================================
-    // POTREE 2.0 SCHEDULER
+    // POTREE 2.0 SCHEDULER (FIXED - Safe LOD management)
     // ========================================================================
+
+    const POTREE2_CONFIG = {
+        POINT_BUDGET: 15_000_000,          // Max points to render (increased)
+        MAX_CONCURRENT_LOADS: 10,          // Concurrent loads (increased)
+        MIN_NODE_PIXEL_SIZE: 10,           // Min screen size for selection (lowered)
+        REFINEMENT_THRESHOLD: 50,          // Screen pixels threshold to refine (lowered)
+        UPDATE_INTERVAL: 30,               // ms between updates (faster)
+        DEBUG_LOD: true                    // Enable LOD debug logs (for debugging)
+    };
 
     class Potree2Scheduler {
         constructor(cloud, extension, octreeBuffer) {
@@ -421,153 +517,479 @@
             this.extension = extension;
             this.nodeLoader = new Potree2NodeLoader(cloud, octreeBuffer);
             
-            this.visibleNodes = new Set();
-            this.loadingNodes = new Set();
+            this.visibleNodes = new Set();       // Nodes currently in scene
+            this.loadingNodes = new Set();       // Nodes being loaded
+            this.selectedNodes = new Set();      // Nodes selected this frame
             this.renderedPoints = 0;
             
             this.frustum = new THREE.Frustum();
             this.projScreenMatrix = new THREE.Matrix4();
             
             this.lastUpdateTime = 0;
-            this.updateInterval = 100;
-            this.pointBudget = 3000000;
-            this.maxConcurrentLoads = 4;
-            this.minNodePixelSize = 100;
+            this.frameCount = 0;
+            
+            // Debug stats
+            this._debugStats = {
+                selectedCount: 0,
+                visibleCount: 0,
+                loadingCount: 0,
+                totalPoints: 0,
+                unloadedCount: 0,
+                refinedCount: 0,
+                keptParentsCount: 0
+            };
+        }
+
+        /**
+         * Calculate Screen Space Error (projected size in pixels)
+         */
+        _calculateScreenSpaceError(node, camera, screenSize) {
+            const worldBox = node.boundingBox.clone();
+            worldBox.applyMatrix4(this.cloud.matrixWorld);
+            
+            const center = new THREE.Vector3();
+            worldBox.getCenter(center);
+            
+            const boxSize = new THREE.Vector3();
+            worldBox.getSize(boxSize);
+            const radius = boxSize.length() / 2;
+            
+            const distance = camera.position.distanceTo(center);
+            
+            if (distance < 0.001) {
+                return Infinity;
+            }
+            
+            const fov = camera.fov * Math.PI / 180;
+            const screenHeight = screenSize.y;
+            const projectedSize = (radius / distance) * (screenHeight / (2 * Math.tan(fov / 2)));
+            
+            return projectedSize;
+        }
+
+        /**
+         * Check if a node should be refined (load children instead)
+         */
+        _shouldRefine(node, screenSize) {
+            return node.screenSize > POTREE2_CONFIG.REFINEMENT_THRESHOLD && node.hasChildren;
+        }
+
+        /**
+         * Check if children are loaded enough to hide parent
+         */
+        _childrenLoadedEnough(node) {
+            if (!node.hasChildren) {
+                return false;
+            }
+            
+            let loadedChildrenCount = 0;
+            let totalChildrenCount = 0;
+            
+            for (const child of node.children) {
+                if (child) {
+                    totalChildrenCount++;
+                    if (child.loaded && child.points) {
+                        loadedChildrenCount++;
+                    }
+                }
+            }
+            
+            if (totalChildrenCount === 0) {
+                return false;
+            }
+            
+            return loadedChildrenCount >= 1;
+        }
+
+        /**
+         * Check if a node is inside the view frustum
+         * VERY lenient for close-up viewing
+         */
+        _isInFrustum(node) {
+            const worldBox = node.boundingBox.clone();
+            worldBox.applyMatrix4(this.cloud.matrixWorld);
+            
+            // Standard frustum test
+            if (this.frustum.intersectsBox(worldBox)) {
+                return true;
+            }
+            
+            const camera = this.extension.viewer.impl.camera;
+            
+            // Camera inside bounding box
+            if (worldBox.containsPoint(camera.position)) {
+                return true;
+            }
+            
+            // Check distance - be VERY generous
+            const center = new THREE.Vector3();
+            worldBox.getCenter(center);
+            const size = new THREE.Vector3();
+            worldBox.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const distance = camera.position.distanceTo(center);
+            
+            // If close, always consider visible
+            if (distance < maxDim * 5) {
+                return true;
+            }
+            
+            // Level-based leniency: lower levels (bigger nodes) are more likely to be relevant
+            if (node.level < 3 && distance < 200) {
+                return true;
+            }
+            
+            // Always include root
+            if (node.level === 0) {
+                return true;
+            }
+            
+            return false;
         }
 
         async update(camera, screenSize) {
             const now = performance.now();
-            if (now - this.lastUpdateTime < this.updateInterval) {
+            if (now - this.lastUpdateTime < POTREE2_CONFIG.UPDATE_INTERVAL) {
                 return;
             }
             this.lastUpdateTime = now;
+            this.frameCount++;
             
             if (!this.cloud.visible || !this.cloud.root) {
                 return;
             }
             
+            // Reset debug stats
+            this._debugStats = {
+                selectedCount: 0,
+                visibleCount: 0,
+                loadingCount: this.loadingNodes.size,
+                totalPoints: 0,
+                unloadedCount: 0,
+                refinedCount: 0,
+                keptParentsCount: 0
+            };
+            
+            // Update frustum
             this.projScreenMatrix.multiplyMatrices(
                 camera.projectionMatrix,
                 camera.matrixWorldInverse
             );
             this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
             
+            // Phase 1: Collect all candidate nodes
             const candidates = [];
             this._collectCandidates(this.cloud.root, camera, screenSize, candidates);
             
-            candidates.sort((a, b) => b.priority - a.priority);
+            // Phase 2: Sort by priority (closer/bigger first)
+            candidates.sort((a, b) => {
+                // Prioritize closer nodes at any level
+                if (a.distance !== b.distance) {
+                    return a.distance - b.distance;
+                }
+                // Then by screen size
+                return b.screenSize - a.screenSize;
+            });
             
-            const selectedNodes = new Set();
+            // Debug: Log candidates count and details
+            if (this.frameCount < 10 || (POTREE2_CONFIG.DEBUG_LOD && this.frameCount % 60 === 0)) {
+                console.log(`[Potree2] Phase 1: ${candidates.length} candidates collected`);
+                console.log(`[Potree2] Candidates by level:`, candidates.reduce((acc, c) => {
+                    acc[c.level] = (acc[c.level] || 0) + 1;
+                    return acc;
+                }, {}));
+            }
+            
+            // Phase 3: Select ALL candidates (no budget filtering for now - debugging)
+            const newSelectedNodes = new Set();
             let totalPoints = 0;
             
             for (const candidate of candidates) {
-                if (totalPoints + candidate.node.numPoints > this.pointBudget) {
+                const node = candidate.node;
+                newSelectedNodes.add(node);
+                totalPoints += node.numPoints;
+                
+                // Only apply budget to VERY excessive cases
+                if (totalPoints > POTREE2_CONFIG.POINT_BUDGET * 2) {
                     break;
                 }
-                selectedNodes.add(candidate.node);
-                totalPoints += candidate.node.numPoints;
             }
             
+            this._debugStats.selectedCount = newSelectedNodes.size;
+            this._debugStats.totalPoints = totalPoints;
+            
+            // Debug: Check for unloaded selected nodes
+            if (this.frameCount < 10 || (POTREE2_CONFIG.DEBUG_LOD && this.frameCount % 60 === 0)) {
+                const unloadedSelected = Array.from(newSelectedNodes).filter(n => !n.loaded && n.numPoints > 0);
+                console.log(`[Potree2] Selected: ${newSelectedNodes.size}, Unloaded to queue: ${unloadedSelected.length}`);
+                if (unloadedSelected.length > 0 && unloadedSelected.length < 20) {
+                    console.log(`[Potree2] Unloaded nodes:`, unloadedSelected.map(n => `${n.name}(pts=${n.numPoints})`).join(', '));
+                }
+            }
+            
+            // Phase 4: Safe parent/child visibility management
+            const finalVisibleNodes = new Set();
+            
+            for (const node of newSelectedNodes) {
+                const parent = node.parent;
+                
+                if (node.loaded && node.points) {
+                    finalVisibleNodes.add(node);
+                    node.lastVisibleTime = now;
+                }
+                
+                if (parent && parent.loaded && parent.points) {
+                    const shouldRefineParent = this._shouldRefine(parent, screenSize);
+                    
+                    if (shouldRefineParent) {
+                        if (this._childrenLoadedEnough(parent)) {
+                            this._debugStats.refinedCount++;
+                        } else {
+                            if (!finalVisibleNodes.has(parent)) {
+                                finalVisibleNodes.add(parent);
+                                this._debugStats.keptParentsCount++;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Keep currently visible parents if children aren't ready
+            for (const node of this.visibleNodes) {
+                if (!finalVisibleNodes.has(node) && node.loaded && node.points) {
+                    let childrenInSelection = 0;
+                    let childrenLoaded = 0;
+                    
+                    for (const child of node.children) {
+                        if (child && newSelectedNodes.has(child)) {
+                            childrenInSelection++;
+                            if (child.loaded && child.points) {
+                                childrenLoaded++;
+                            }
+                        }
+                    }
+                    
+                    if (childrenInSelection > 0 && childrenLoaded < childrenInSelection) {
+                        finalVisibleNodes.add(node);
+                        this._debugStats.keptParentsCount++;
+                    }
+                }
+            }
+            
+            // Phase 5: Queue loading for selected but unloaded nodes
             const nodesToLoad = [];
-            for (const node of selectedNodes) {
+            for (const node of newSelectedNodes) {
                 if (!node.loaded && !node.loading && !node.failed && node.numPoints > 0) {
                     nodesToLoad.push(node);
                 }
             }
             
+            // Also add children of visible nodes that need refinement
+            for (const node of this.visibleNodes) {
+                if (node.shouldRefine && node.hasChildren) {
+                    for (const child of node.children) {
+                        if (child && !child.loaded && !child.loading && !child.failed && child.numPoints > 0) {
+                            if (!nodesToLoad.includes(child)) {
+                                nodesToLoad.push(child);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Sort by distance (closer first)
+            nodesToLoad.sort((a, b) => (a.distance || Infinity) - (b.distance || Infinity));
+            
+            // Debug: Check loading queue
+            if (this.frameCount < 10 || (POTREE2_CONFIG.DEBUG_LOD && this.frameCount % 60 === 0)) {
+                console.log(`[Potree2] To load: ${nodesToLoad.length}, Currently loading: ${this.loadingNodes.size}`);
+            }
+            
             const currentLoading = this.loadingNodes.size;
-            const canLoad = Math.max(0, this.maxConcurrentLoads - currentLoading);
+            const canLoad = Math.max(0, POTREE2_CONFIG.MAX_CONCURRENT_LOADS - currentLoading);
             
             for (let i = 0; i < Math.min(nodesToLoad.length, canLoad); i++) {
                 const node = nodesToLoad[i];
                 this.loadingNodes.add(node);
                 
+                if (this.frameCount < 10) {
+                    console.log(`[Potree2] Starting load: ${node.name} (pts=${node.numPoints}, byteSize=${node.byteSize})`);
+                }
+                
                 this.nodeLoader.loadNode(node).then(() => {
                     this.loadingNodes.delete(node);
                     
                     if (node.loaded && node.points) {
-                        this.extension.addNodeToScene(node);
+                        this._addNodeToScene(node);
                     }
+                }).catch(err => {
+                    console.error(`[Potree2] Load failed for ${node.name}:`, err);
+                    this.loadingNodes.delete(node);
                 });
             }
             
-            this._updateVisibility(selectedNodes);
-            this.renderedPoints = totalPoints;
+            // Phase 6: Update scene visibility
+            this._updateSceneVisibility(finalVisibleNodes);
+            
+            this.selectedNodes = newSelectedNodes;
+            this._debugStats.visibleCount = this.visibleNodes.size;
+            this.renderedPoints = this._calculateActualRenderedPoints();
+            
+            // Debug logging - more frequent
+            if (POTREE2_CONFIG.DEBUG_LOD && this.frameCount % 20 === 0) {
+                this._logDebugStats(candidates);
+            }
         }
 
-        _collectCandidates(node, camera, screenSize, candidates) {
+        _collectCandidates(node, camera, screenSize, candidates, depth = 0) {
             if (!node) return;
             
+            // Higher depth limit
+            if (depth > 15) return;
+            
+            // Calculate distance first (needed for leniency checks)
             const worldBox = node.boundingBox.clone();
             worldBox.applyMatrix4(this.cloud.matrixWorld);
-            
-            if (!this.frustum.intersectsBox(worldBox)) {
-                return;
-            }
-            
             const center = new THREE.Vector3();
             worldBox.getCenter(center);
             const distance = camera.position.distanceTo(center);
             
-            const boxSize = new THREE.Vector3();
-            worldBox.getSize(boxSize);
-            const radius = boxSize.length() / 2;
+            // Check frustum - VERY lenient
+            const inFrustum = this._isInFrustum(node);
             
-            const fov = camera.fov * Math.PI / 180;
-            const slope = Math.tan(fov / 2);
-            const projectedSize = (radius / (slope * distance)) * screenSize.y;
+            // Calculate projected size
+            const projectedSize = this._calculateScreenSpaceError(node, camera, screenSize);
             
-            node.distance = distance;
             node.screenSize = projectedSize;
+            node.distance = distance;
             
-            const priority = projectedSize / (node.level + 1);
+            // Debug logging for understanding hierarchy traversal
+            const shouldLog = this.frameCount < 10 && depth < 5;
+            if (shouldLog) {
+                const childNames = node.children.filter(c=>c).map(c=>c.name).join(',');
+                console.log(`[Collect] ${node.name}: depth=${depth}, dist=${distance.toFixed(1)}, screenSize=${projectedSize.toFixed(0)}, hasChildren=${node.hasChildren}, childCount=${node.children.filter(c=>c).length}, children=[${childNames}]`);
+            }
             
-            if (projectedSize > this.minNodePixelSize || node.level === 0) {
+            // Add ALL nodes to candidates if not too far
+            // Much more inclusive
+            const shouldAdd = distance < 500 || projectedSize > 5 || node.level === 0;
+            if (shouldAdd) {
                 candidates.push({
                     node: node,
-                    priority: priority,
+                    screenSize: projectedSize,
                     distance: distance,
-                    screenSize: projectedSize
+                    level: node.level
                 });
             }
             
-            if (projectedSize > this.minNodePixelSize * 2 || node.level < 2) {
-                for (const child of node.children) {
+            // Determine if should refine
+            const isClose = distance < 200;
+            node.shouldRefine = node.hasChildren && (projectedSize > 20 || isClose || node.level < 4);
+            
+            // ALWAYS try to recurse to children for close-up or low-level nodes
+            const shouldRecurse = node.hasChildren && (node.shouldRefine || node.level < 5 || isClose);
+            
+            if (shouldRecurse) {
+                let actualChildCount = 0;
+                for (let i = 0; i < 8; i++) {
+                    const child = node.children[i];
                     if (child) {
-                        this._collectCandidates(child, camera, screenSize, candidates);
+                        actualChildCount++;
+                        this._collectCandidates(child, camera, screenSize, candidates, depth + 1);
                     }
+                }
+                
+                // Critical debug: hasChildren is true but no children found
+                if (actualChildCount === 0 && node.hasChildren && shouldLog) {
+                    console.error(`[Collect] PROBLEM: ${node.name} hasChildren=true but children array has 0 children!`);
+                    console.log(`[Collect] children array:`, node.children);
                 }
             }
         }
 
-        _updateVisibility(selectedNodes) {
+        _addNodeToScene(node) {
+            if (!node.points || node.isInScene) return;
+            
+            node.points.matrix.copy(this.cloud.matrixWorld);
+            node.points.matrixWorld.copy(this.cloud.matrixWorld);
+            
+            this.extension.addNodeToScene(node);
+            node.isInScene = true;
+            this.visibleNodes.add(node);
+        }
+
+        _removeNodeFromScene(node) {
+            if (!node.points || !node.isInScene) return;
+            
+            this.extension.removeNodeFromScene(node);
+            node.isInScene = false;
+            this.visibleNodes.delete(node);
+            this._debugStats.unloadedCount++;
+        }
+
+        _updateSceneVisibility(finalVisibleNodes) {
+            const nodesToRemove = [];
             for (const node of this.visibleNodes) {
-                if (!selectedNodes.has(node)) {
-                    this.extension.removeNodeFromScene(node);
+                if (!finalVisibleNodes.has(node)) {
+                    nodesToRemove.push(node);
                 }
             }
             
-            for (const node of selectedNodes) {
-                if (node.loaded && node.points && !this.visibleNodes.has(node)) {
-                    this.extension.addNodeToScene(node);
-                }
+            for (const node of nodesToRemove) {
+                this._removeNodeFromScene(node);
             }
             
-            this.visibleNodes.clear();
-            for (const node of selectedNodes) {
-                if (node.loaded && node.points) {
-                    this.visibleNodes.add(node);
+            for (const node of finalVisibleNodes) {
+                if (node.loaded && node.points && !node.isInScene) {
+                    this._addNodeToScene(node);
                 }
+            }
+        }
+
+        _calculateActualRenderedPoints() {
+            let total = 0;
+            for (const node of this.visibleNodes) {
+                total += node.numPoints || 0;
+            }
+            return total;
+        }
+
+        _logDebugStats(candidates = []) {
+            const camera = this.extension.viewer.impl.camera;
+            
+            console.log('[Potree2Scheduler LOD]', {
+                frame: this.frameCount,
+                camDist: camera.position.length().toFixed(1),
+                candidates: candidates.length,
+                selected: this._debugStats.selectedCount,
+                visible: this._debugStats.visibleCount,
+                loading: this._debugStats.loadingCount,
+                points: this._debugStats.totalPoints.toLocaleString(),
+                refined: this._debugStats.refinedCount,
+                keptParents: this._debugStats.keptParentsCount,
+                unloaded: this._debugStats.unloadedCount
+            });
+            
+            // Log first few candidates for debugging
+            if (candidates.length > 0 && candidates.length < 10) {
+                console.log('  Candidates:', candidates.map(c => ({
+                    name: c.node.name,
+                    level: c.level,
+                    screenSize: c.screenSize?.toFixed(0),
+                    loaded: c.node.loaded,
+                    hasChildren: c.node.hasChildren
+                })));
             }
         }
 
         dispose() {
             for (const node of this.visibleNodes) {
-                this.extension.removeNodeFromScene(node);
+                this._removeNodeFromScene(node);
                 node.dispose();
             }
             this.visibleNodes.clear();
             this.loadingNodes.clear();
+            this.selectedNodes.clear();
             this._disposeNodeTree(this.cloud.root);
         }
 
@@ -575,7 +997,7 @@
             if (!node) return;
             
             if (node.points) {
-                this.extension.removeNodeFromScene(node);
+                this._removeNodeFromScene(node);
                 node.dispose();
             }
             
@@ -713,13 +1135,57 @@
                 cloudsLoaded: this.clouds.size
             };
         }
+
+        /**
+         * Set point budget for all Potree 2.0 clouds
+         * @param {number} budget
+         */
+        setPointBudget(budget) {
+            POTREE2_CONFIG.POINT_BUDGET = budget;
+            log(`Potree 2.0 point budget set to: ${budget.toLocaleString()}`);
+        }
+
+        /**
+         * Set refinement threshold for all Potree 2.0 clouds
+         * @param {number} threshold
+         */
+        setRefinementThreshold(threshold) {
+            POTREE2_CONFIG.REFINEMENT_THRESHOLD = threshold;
+            log(`Potree 2.0 refinement threshold set to: ${threshold}px`);
+        }
+
+        /**
+         * Enable/disable LOD debug logging
+         * @param {boolean} enabled
+         */
+        setLODDebug(enabled) {
+            POTREE2_CONFIG.DEBUG_LOD = enabled;
+            log(`Potree 2.0 LOD debug logging: ${enabled}`);
+        }
+
+        /**
+         * Get current LOD configuration
+         * @returns {Object}
+         */
+        getLODConfig() {
+            return {
+                pointBudget: POTREE2_CONFIG.POINT_BUDGET,
+                refinementThreshold: POTREE2_CONFIG.REFINEMENT_THRESHOLD,
+                minNodePixelSize: POTREE2_CONFIG.MIN_NODE_PIXEL_SIZE,
+                maxConcurrentLoads: POTREE2_CONFIG.MAX_CONCURRENT_LOADS,
+                updateInterval: POTREE2_CONFIG.UPDATE_INTERVAL,
+                debugLOD: POTREE2_CONFIG.DEBUG_LOD
+            };
+        }
     }
 
     window.Potree2Loader = Potree2Loader;
     window.Potree2PointCloud = Potree2PointCloud;
     window.Potree2Node = Potree2Node;
     window.Potree2Scheduler = Potree2Scheduler;
+    window.POTREE2_CONFIG = POTREE2_CONFIG;
 
     log('Potree2Loader registered');
+    log('DEBUG: Use window.POTREE2_CONFIG to view/modify Potree 2.0 config');
 
 })();
