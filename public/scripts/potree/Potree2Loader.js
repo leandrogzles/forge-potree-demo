@@ -221,15 +221,29 @@
             
             log(`Hierarchy parsed: ${nodes.size} nodes, consumed ${result.nextOffset} bytes`);
             
-            // Log level distribution
+            // Log level distribution and data availability
             const levelCounts = {};
             let maxLevel = 0;
+            let nodesWithData = 0;
+            let nodesWithoutData = 0;
+            let totalPoints = 0;
+            
             for (const [name, node] of nodes) {
                 levelCounts[node.level] = (levelCounts[node.level] || 0) + 1;
                 maxLevel = Math.max(maxLevel, node.level);
+                totalPoints += node.numPoints;
+                
+                if (node.byteSize > 0) {
+                    nodesWithData++;
+                } else {
+                    nodesWithoutData++;
+                }
             }
             log(`Nodes per level:`, levelCounts);
             log(`Max depth: ${maxLevel}`);
+            log(`Nodes with data (byteSize > 0): ${nodesWithData}`);
+            log(`Nodes without data (byteSize = 0): ${nodesWithoutData}`);
+            log(`Total points in hierarchy: ${totalPoints.toLocaleString()}`);
             
             return { root, nodes };
         }
@@ -252,8 +266,8 @@
             const byteSize = Number(view.getBigInt64(offset + 14, true));
             
             // Log first few nodes and any PROXY nodes
-            if (nodes.size < 20 || type === NODE_TYPE.PROXY) {
-                const typeNames = ['NORMAL', 'LEAF', 'PROXY'];
+            const typeNames = ['NORMAL', 'LEAF', 'PROXY'];
+            if (nodes.size < 30 || type === NODE_TYPE.PROXY) {
                 log(`Parse ${node.name}: type=${typeNames[type] || type}, mask=${childMask.toString(2).padStart(8,'0')}, pts=${numPoints}, offset=${byteOffset}, size=${byteSize}`);
             }
             
@@ -321,14 +335,16 @@
     }
 
     // ========================================================================
-    // POTREE 2.0 NODE LOADER
+    // POTREE 2.0 NODE LOADER - Uses HTTP Range Requests for streaming
     // ========================================================================
 
     class Potree2NodeLoader {
-        constructor(cloud, octreeBuffer) {
+        constructor(cloud, octreeUrl) {
             this.cloud = cloud;
-            this.octreeBuffer = octreeBuffer;
+            this.octreeUrl = octreeUrl;  // URL instead of buffer - enables streaming large files
             this.loading = new Map();
+            this.cache = new Map();      // Cache loaded node buffers
+            this.maxCacheSize = 100;     // Max nodes to cache
         }
 
         async loadNode(node) {
@@ -337,27 +353,56 @@
             }
 
             node.loading = true;
-            
+
             const promise = (async () => {
                 try {
                     // Skip PROXY nodes (they don't have point data directly)
-                    // Skip nodes with no data
-                    if (node.nodeType === NODE_TYPE.PROXY || node.byteSize === 0 || node.numPoints === 0) {
+                    if (node.nodeType === NODE_TYPE.PROXY) {
                         node.loaded = true;
                         node.loading = false;
                         return;
                     }
                     
-                    const buffer = this.octreeBuffer.slice(
-                        node.byteOffset,
-                        node.byteOffset + node.byteSize
-                    );
+                    // Check if node has data to load
+                    if (node.byteSize === 0) {
+                        warn(`Node ${node.name} has byteSize=0, skipping load`);
+                        node.loaded = true;
+                        node.loading = false;
+                        return;
+                    }
                     
+                    // Use HTTP Range Request to fetch only this node's data
+                    const startByte = node.byteOffset;
+                    const endByte = node.byteOffset + node.byteSize - 1;
+                    
+                    log(`Loading node ${node.name}: bytes ${startByte}-${endByte} (${node.byteSize} bytes, ${node.numPoints} points)`);
+
+                    const response = await fetch(this.octreeUrl, {
+                        headers: {
+                            'Range': `bytes=${startByte}-${endByte}`
+                        }
+                    });
+                    
+                    if (!response.ok && response.status !== 206) {
+                        throw new Error(`HTTP ${response.status} for range request`);
+                    }
+                    
+                    const buffer = await response.arrayBuffer();
+                    
+                    if (buffer.byteLength === 0) {
+                        warn(`Node ${node.name} received empty buffer`);
+                        node.loaded = true;
+                        node.loading = false;
+                        return;
+                    }
+
                     this._decodeBuffer(node, buffer);
-                    
+
                     node.loaded = true;
                     node.loading = false;
                     
+                    log(`Node ${node.name} loaded: ${node.numPoints} points`);
+
                 } catch (err) {
                     warn(`Failed to load node ${node.name}:`, err.message);
                     node.failed = true;
@@ -458,8 +503,8 @@
             // Create material with optimized settings for LOD transitions
             const PointsMaterialClass = THREE.PointsMaterial || THREE.PointCloudMaterial;
             node.material = new PointsMaterialClass({
-                size: 3,                    // Slightly larger points fill gaps better
-                sizeAttenuation: true,      // Points scale with distance
+                size: 5,                    // Larger points to fill gaps when zooming in
+                sizeAttenuation: true,      // Points scale with distance (important!)
                 vertexColors: true,
                 depthWrite: true,           // Allow proper depth sorting
                 depthTest: true,
@@ -512,10 +557,10 @@
     };
 
     class Potree2Scheduler {
-        constructor(cloud, extension, octreeBuffer) {
+        constructor(cloud, extension, octreeUrl) {
             this.cloud = cloud;
             this.extension = extension;
-            this.nodeLoader = new Potree2NodeLoader(cloud, octreeBuffer);
+            this.nodeLoader = new Potree2NodeLoader(cloud, octreeUrl);  // Uses URL for streaming
             
             this.visibleNodes = new Set();       // Nodes currently in scene
             this.loadingNodes = new Set();       // Nodes being loaded
@@ -720,10 +765,10 @@
             
             // Debug: Check for unloaded selected nodes
             if (this.frameCount < 10 || (POTREE2_CONFIG.DEBUG_LOD && this.frameCount % 60 === 0)) {
-                const unloadedSelected = Array.from(newSelectedNodes).filter(n => !n.loaded && n.numPoints > 0);
+                const unloadedSelected = Array.from(newSelectedNodes).filter(n => !n.loaded);
                 console.log(`[Potree2] Selected: ${newSelectedNodes.size}, Unloaded to queue: ${unloadedSelected.length}`);
                 if (unloadedSelected.length > 0 && unloadedSelected.length < 20) {
-                    console.log(`[Potree2] Unloaded nodes:`, unloadedSelected.map(n => `${n.name}(pts=${n.numPoints})`).join(', '));
+                    console.log(`[Potree2] Unloaded nodes:`, unloadedSelected.map(n => `${n.name}(pts=${n.numPoints || '?'})`).join(', '));
                 }
             }
             
@@ -777,18 +822,20 @@
             }
             
             // Phase 5: Queue loading for selected but unloaded nodes
+            // FIXED: Don't require numPoints > 0 since it's determined after loading
             const nodesToLoad = [];
             for (const node of newSelectedNodes) {
-                if (!node.loaded && !node.loading && !node.failed && node.numPoints > 0) {
+                if (!node.loaded && !node.loading && !node.failed) {
                     nodesToLoad.push(node);
                 }
             }
-            
+
             // Also add children of visible nodes that need refinement
             for (const node of this.visibleNodes) {
                 if (node.shouldRefine && node.hasChildren) {
                     for (const child of node.children) {
-                        if (child && !child.loaded && !child.loading && !child.failed && child.numPoints > 0) {
+                        // FIXED: Don't require numPoints > 0
+                        if (child && !child.loaded && !child.loading && !child.failed) {
                             if (!nodesToLoad.includes(child)) {
                                 nodesToLoad.push(child);
                             }
@@ -800,9 +847,19 @@
             // Sort by distance (closer first)
             nodesToLoad.sort((a, b) => (a.distance || Infinity) - (b.distance || Infinity));
             
-            // Debug: Check loading queue
+            // Debug: Check loading queue and WHY nodes aren't being queued
             if (this.frameCount < 10 || (POTREE2_CONFIG.DEBUG_LOD && this.frameCount % 60 === 0)) {
                 console.log(`[Potree2] To load: ${nodesToLoad.length}, Currently loading: ${this.loadingNodes.size}`);
+                
+                // Check selected nodes that aren't visible
+                const notVisibleSelected = Array.from(newSelectedNodes).filter(n => !this.visibleNodes.has(n));
+                console.log(`[Potree2] Selected but not visible: ${notVisibleSelected.length}`);
+                
+                if (notVisibleSelected.length > 0 && notVisibleSelected.length < 20) {
+                    for (const n of notVisibleSelected) {
+                        console.log(`  ${n.name}: loaded=${n.loaded}, loading=${n.loading}, failed=${n.failed}, points=${n.points ? 'yes' : 'no'}, byteSize=${n.byteSize}, numPoints=${n.numPoints}`);
+                    }
+                }
             }
             
             const currentLoading = this.loadingNodes.size;
@@ -1064,15 +1121,12 @@
                 cloud.root = root;
                 cloud.nodes = nodes;
                 
-                log('Loading octree.bin...');
-                const octreeResponse = await fetch(cloud.getOctreeUrl());
-                if (!octreeResponse.ok) {
-                    throw new Error(`Failed to fetch octree: HTTP ${octreeResponse.status}`);
-                }
-                const octreeBuffer = await octreeResponse.arrayBuffer();
-                cloud.octreeData = octreeBuffer;
+                // IMPORTANT: Do NOT load entire octree.bin - use streaming/range requests instead
+                // This allows loading of multi-GB point clouds
+                const octreeUrl = cloud.getOctreeUrl();
+                log(`Octree URL ready for streaming: ${octreeUrl}`);
                 
-                const scheduler = new Potree2Scheduler(cloud, this.extension, octreeBuffer);
+                const scheduler = new Potree2Scheduler(cloud, this.extension, octreeUrl);
                 
                 await scheduler.nodeLoader.loadNode(cloud.root);
                 
@@ -1152,6 +1206,15 @@
         setRefinementThreshold(threshold) {
             POTREE2_CONFIG.REFINEMENT_THRESHOLD = threshold;
             log(`Potree 2.0 refinement threshold set to: ${threshold}px`);
+        }
+
+        /**
+         * Set minimum node pixel size - LOWER = MORE DETAIL
+         * @param {number} size
+         */
+        setMinNodeSize(size) {
+            POTREE2_CONFIG.MIN_NODE_PIXEL_SIZE = size;
+            log(`Potree 2.0 MIN_NODE_PIXEL_SIZE set to: ${size}px`);
         }
 
         /**

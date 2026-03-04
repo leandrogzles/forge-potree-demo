@@ -20,7 +20,7 @@ const datasetStorageService = require('./datasetStorageService');
 
 const LOG_PREFIX = '[LASUploadController]';
 
-const MAX_FILE_SIZE = parseInt(process.env.MAX_LAS_FILE_SIZE) || 2 * 1024 * 1024 * 1024; // 2GB default
+const MAX_FILE_SIZE = parseInt(process.env.MAX_LAS_FILE_SIZE) || 5 * 1024 * 1024 * 1024; // 5GB default
 const ALLOWED_EXTENSIONS = ['.las', '.laz'];
 
 class LASUploadController {

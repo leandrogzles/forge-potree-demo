@@ -49,7 +49,7 @@ const upload = multer({
     storage: storage,
     fileFilter: fileFilter,
     limits: {
-        fileSize: parseInt(process.env.MAX_LAS_FILE_SIZE) || 2 * 1024 * 1024 * 1024 // 2GB default
+        fileSize: parseInt(process.env.MAX_LAS_FILE_SIZE) || 5 * 1024 * 1024 * 1024 // 2GB default
     }
 });
 

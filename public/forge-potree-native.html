@@ -243,6 +243,7 @@
             color: #eee;
             font-size: 11px;
             text-align: center;
+            width: 90px;
         }
         
         .transform-inputs label {
@@ -272,7 +273,7 @@
     </style>
 </head>
 <body>
-    <div id="viewer"></div>
+    <div style="width: 100%; height: 90%;" id="viewer"></div>
     
     <div id="loading-overlay">
         <div>
@@ -325,25 +326,56 @@
             <div class="control-group">
                 <label>Position (X, Y, Z)</label>
                 <div class="transform-inputs">
-                    <input type="number" id="pos-x" value="0" step="0.5">
-                    <input type="number" id="pos-y" value="0" step="0.5">
-                    <input type="number" id="pos-z" value="-100" step="0.5">
+                    <input type="number" id="pos-x" value="-61" step="0.5"> <!-- 7 -->
+                    <input type="number" id="pos-y" value="-35" step="0.5">  <!-- 9,5 -->
+                    <input type="number" id="pos-z" value="-270" step="0.5">  <!-- -4 -->
                 </div>
             </div>
             
             <div class="control-group">
-                <label>Scale: <span id="scale-value">1.0</span></label>
-                <input type="range" id="scale" min="0.1" max="50" step="0.1" value="1">
+                <label>Rotation (X, Y, Z) in degrees</label>
+                <div class="transform-inputs">
+                    <input type="number" id="rot-x" value="0" step="5">
+                    <input type="number" id="rot-y" value="0" step="5">
+                    <input type="number" id="rot-z" value="170" step="5">  <!-- 30 -->
+                </div>
+            </div>
+            
+            <div class="button-row" style="margin-bottom: 10px;">
+                <button id="btn-rot-x-plus" class="btn-secondary" style="padding: 5px 10px;" title="Rotate +15° around X">X+</button>
+                <button id="btn-rot-x-minus" class="btn-secondary" style="padding: 5px 10px;" title="Rotate -15° around X">X-</button>
+                <button id="btn-rot-y-plus" class="btn-secondary" style="padding: 5px 10px;" title="Rotate +15° around Y">Y+</button>
+                <button id="btn-rot-y-minus" class="btn-secondary" style="padding: 5px 10px;" title="Rotate -15° around Y">Y-</button>
+                <button id="btn-rot-z-plus" class="btn-secondary" style="padding: 5px 10px;" title="Rotate +15° around Z">Z+</button>
+                <button id="btn-rot-z-minus" class="btn-secondary" style="padding: 5px 10px;" title="Rotate -15° around Z">Z-</button>
+                <button id="btn-rot-reset" class="btn-danger" style="padding: 5px 10px;" title="Reset rotation to 0">Reset</button>
             </div>
             
             <div class="control-group">
-                <label>Point Size: <span id="point-size-value">2</span></label>
-                <input type="range" id="point-size" min="1" max="10" step="0.5" value="2">
+                <label>Scale: <span id="scale-value">3.0</span></label>
+                <input type="range" id="scale" min="0.1" max="50" step="0.1" value="3">
             </div>
             
             <div class="control-group">
-                <label>Point Budget: <span id="point-budget-value">3,000,000</span></label>
-                <input type="range" id="point-budget" min="500000" max="10000000" step="500000" value="3000000">
+                <label>Point Size: <span id="point-size-value">5</span></label>
+                <input type="range" id="point-size" min="1" max="30" step="0.5" value="5">
+            </div>
+            
+            <div class="control-group">
+                <label>Point Budget: <span id="point-budget-value">20,000,000</span></label>
+                <input type="range" id="point-budget" min="1000000" max="100000000" step="1000000" value="20000000">
+            </div>
+            
+            <h3>LOD Settings (Detail Control)</h3>
+            
+            <div class="control-group">
+                <label>Min Node Size: <span id="min-node-size-value">5</span>px (lower = more detail)</label>
+                <input type="range" id="min-node-size" min="1" max="50" step="1" value="5">
+            </div>
+            
+            <div class="control-group">
+                <label>Refinement Threshold: <span id="refinement-value">30</span>px (lower = more aggressive)</label>
+                <input type="range" id="refinement-threshold" min="10" max="200" step="5" value="30">
             </div>
             
             <div class="button-row">
@@ -358,14 +390,76 @@
             </div>
         </div>
         
-        <!-- SECTION 3: Statistics -->
-        <h3>3. Statistics</h3>
+        <!-- SECTION 3: Clash Detection -->
+        <div id="clash-section" class="section-disabled">
+            <h3>3. Clash Detection <span id="clash-status" class="status-badge waiting">OFF</span></h3>
+            
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="clash-enabled" style="margin-right: 8px;">
+                    Enable Depth Clash Detection
+                </label>
+            </div>
+            
+            <div class="control-group">
+                <label>Epsilon (Tolerance): <span id="epsilon-value">2.0</span> units</label>
+                <input type="range" id="clash-epsilon" min="0.1" max="10" step="0.1" value="2.0">
+            </div>
+            
+            <div class="control-group">
+                <label>Sample Rate: <span id="sample-rate-value">10</span>%</label>
+                <input type="range" id="clash-sample-rate" min="1" max="100" step="1" value="10">
+            </div>
+            
+            <div class="control-group">
+                <label>Clash Intensity: <span id="intensity-value">0.8</span></label>
+                <input type="range" id="clash-intensity" min="0" max="1" step="0.1" value="0.8">
+            </div>
+            
+            <div class="control-group">
+                <label>Clash Color</label>
+                <select id="clash-color">
+                    <option value="red" selected>Red</option>
+                    <option value="orange">Orange</option>
+                    <option value="yellow">Yellow</option>
+                    <option value="magenta">Magenta</option>
+                    <option value="cyan">Cyan</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="clash-debug" style="margin-right: 8px;" checked>
+                    Debug: Enable Console Logging
+                </label>
+            </div>
+            
+            <div class="button-row">
+                <button id="btn-clash-refresh" class="btn-secondary">Refresh Detection</button>
+            </div>
+            
+            <div id="clash-stats" style="margin-top: 10px; font-size: 11px; color: #888; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">
+                <div>Status: <span id="clash-stat-status" style="color: #4fc3f7;">Inactive</span></div>
+                <div>Points Checked: <span id="clash-stat-checked" style="color: #4fc3f7;">0</span></div>
+                <div>Clashes Found: <span id="clash-stat-clashes" style="color: #f44336;">0</span></div>
+                <div>Near Clashes: <span id="clash-stat-near" style="color: #ff9800;">0</span></div>
+                <div>Processing Time: <span id="clash-stat-time" style="color: #4fc3f7;">0</span> ms</div>
+            </div>
+        </div>
+        
+        <!-- SECTION 4: Statistics -->
+        <h3>4. Statistics</h3>
         <div id="stats">
             <div>Model: <span class="stat-value" id="stat-model">Not loaded</span></div>
             <div>Points Rendered: <span class="stat-value" id="stat-points">0</span></div>
             <div>Nodes Visible: <span class="stat-value" id="stat-nodes">0</span></div>
             <div>Clouds Loaded: <span class="stat-value" id="stat-clouds">0</span></div>
-            <div>Point Budget: <span class="stat-value" id="stat-budget">3,000,000</span></div>
+            <div>Point Budget: <span class="stat-value" id="stat-budget">20,000,000</span></div>
+            <div style="margin-top: 8px; border-top: 1px solid #333; padding-top: 8px;">
+                <div>Min Node Size: <span class="stat-value" id="stat-min-node">5</span>px</div>
+                <div>Refinement: <span class="stat-value" id="stat-refinement">30</span>px</div>
+                <div>Budget Usage: <span class="stat-value" id="stat-budget-usage">0%</span></div>
+            </div>
         </div>
     </div>
     
@@ -374,6 +468,8 @@
     <!-- Extension Scripts -->
     <script src="/scripts/potree/Potree2Loader.js"></script>
     <script src="/scripts/potree/ForgePotreePointCloudExtension.js"></script>
+    <script src="/scripts/potree/ForgeClashDepthExtension.js"></script>
+    <script src="/scripts/potree/ClashDepthHelper.js"></script>
     
     <script>
         // ====================================================================
@@ -382,6 +478,7 @@
         
         let viewer = null;
         let potreeExt = null;
+        let clashExt = null;
         let modelLoaded = false;
         let currentModelName = null;
         
@@ -412,15 +509,19 @@
         
         console.log = function(...args) {
             originalLog.apply(console, args);
-            if (args[0] && typeof args[0] === 'string' && args[0].includes('[ForgePotree]')) {
-                addLog(args.join(' '), 'info');
+            if (args[0] && typeof args[0] === 'string') {
+                if (args[0].includes('[ForgePotree]') || args[0].includes('[ClashDepth]')) {
+                    addLog(args.join(' '), 'info');
+                }
             }
         };
         
         console.warn = function(...args) {
             originalWarn.apply(console, args);
-            if (args[0] && typeof args[0] === 'string' && args[0].includes('[ForgePotree]')) {
-                addLog(args.join(' '), 'warn');
+            if (args[0] && typeof args[0] === 'string') {
+                if (args[0].includes('[ForgePotree]') || args[0].includes('[ClashDepth]')) {
+                    addLog(args.join(' '), 'warn');
+                }
             }
         };
         
@@ -443,6 +544,13 @@
             const badge = document.getElementById('cloud-status');
             badge.className = `status-badge ${status}`;
             badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+        
+        function setClashStatus(enabled) {
+            const badge = document.getElementById('clash-status');
+            badge.className = `status-badge ${enabled ? 'ready' : 'waiting'}`;
+            badge.textContent = enabled ? 'ON' : 'OFF';
+            document.getElementById('clash-stat-status').textContent = enabled ? 'Active' : 'Inactive';
         }
         
         // ====================================================================
@@ -545,7 +653,10 @@
                     const container = document.getElementById('viewer');
                     
                     const config = {
-                        extensions: ['ForgePotreePointCloudExtension']
+                        extensions: [
+                            'ForgePotreePointCloudExtension',
+                            'ForgeClashDepthExtension'
+                        ]
                     };
                     
                     viewer = new Autodesk.Viewing.GuiViewer3D(container, config);
@@ -561,11 +672,15 @@
                     viewer.setBackgroundColor(240, 240, 245, 240, 240, 245);
                     viewer.setLightPreset(0);
                     
-                    // Wait for extension to load
+                    // Wait for extensions to load
                     viewer.addEventListener(Autodesk.Viewing.EXTENSION_LOADED_EVENT, (e) => {
                         if (e.extensionId === 'ForgePotreePointCloudExtension') {
                             potreeExt = viewer.getExtension('ForgePotreePointCloudExtension');
                             addLog('ForgePotreePointCloudExtension ready', 'success');
+                        }
+                        if (e.extensionId === 'ForgeClashDepthExtension') {
+                            clashExt = viewer.getExtension('ForgeClashDepthExtension');
+                            addLog('ForgeClashDepthExtension ready', 'success');
                         }
                     });
                     
@@ -709,6 +824,32 @@
             const scaleValue = document.getElementById('scale-value');
             scaleSlider.addEventListener('input', () => {
                 scaleValue.textContent = parseFloat(scaleSlider.value).toFixed(1);
+                // Update scale dynamically if cloud is loaded
+                if (potreeExt) {
+                    const name = document.getElementById('cloud-name').value;
+                    const clouds = potreeExt.clouds;
+                    const clouds2 = potreeExt.clouds2;
+                    if (clouds.has(name) || clouds2.has(name)) {
+                        potreeExt.setScale(name, parseFloat(scaleSlider.value));
+                    }
+                }
+            });
+            
+            // Position inputs - live update
+            ['pos-x', 'pos-y', 'pos-z'].forEach(id => {
+                document.getElementById(id).addEventListener('change', () => {
+                    if (!potreeExt) return;
+                    const name = document.getElementById('cloud-name').value;
+                    const clouds = potreeExt.clouds;
+                    const clouds2 = potreeExt.clouds2;
+                    if (clouds.has(name) || clouds2.has(name)) {
+                        const posX = parseFloat(document.getElementById('pos-x').value);
+                        const posY = parseFloat(document.getElementById('pos-y').value);
+                        const posZ = parseFloat(document.getElementById('pos-z').value);
+                        potreeExt.setPosition(name, posX, posY, posZ);
+                        addLog(`Position updated: (${posX}, ${posY}, ${posZ})`, 'info');
+                    }
+                });
             });
             
             // Point size slider
@@ -733,6 +874,36 @@
                 }
             });
             
+            // Min node size slider (LOD control)
+            const minNodeSlider = document.getElementById('min-node-size');
+            const minNodeValue = document.getElementById('min-node-size-value');
+            minNodeSlider.addEventListener('input', () => {
+                const size = parseInt(minNodeSlider.value);
+                minNodeValue.textContent = size;
+                if (potreeExt) {
+                    potreeExt.setMinNodeSize(size);
+                    // Also update Potree 2.0 if available
+                    if (potreeExt.potree2Loader) {
+                        potreeExt.potree2Loader.setMinNodeSize(size);
+                    }
+                }
+            });
+            
+            // Refinement threshold slider (LOD control)
+            const refinementSlider = document.getElementById('refinement-threshold');
+            const refinementValue = document.getElementById('refinement-value');
+            refinementSlider.addEventListener('input', () => {
+                const threshold = parseInt(refinementSlider.value);
+                refinementValue.textContent = threshold;
+                if (potreeExt) {
+                    potreeExt.setRefinementThreshold(threshold);
+                    // Also update Potree 2.0 if available
+                    if (potreeExt.potree2Loader) {
+                        potreeExt.potree2Loader.setRefinementThreshold(threshold);
+                    }
+                }
+            });
+            
             // Load point cloud button
             document.getElementById('btn-load-cloud').addEventListener('click', async () => {
                 if (!potreeExt || !modelLoaded) {
@@ -746,6 +917,9 @@
                 const posX = parseFloat(document.getElementById('pos-x').value);
                 const posY = parseFloat(document.getElementById('pos-y').value);
                 const posZ = parseFloat(document.getElementById('pos-z').value);
+                const rotX = parseFloat(document.getElementById('rot-x').value) * Math.PI / 180;
+                const rotY = parseFloat(document.getElementById('rot-y').value) * Math.PI / 180;
+                const rotZ = parseFloat(document.getElementById('rot-z').value) * Math.PI / 180;
                 
                 try {
                     setCloudStatus('loading');
@@ -753,6 +927,7 @@
                     
                     const cloud = await potreeExt.loadPointCloud(name, url, {
                         position: new THREE.Vector3(posX, posY, posZ),
+                        rotation: new THREE.Euler(rotX, rotY, rotZ),
                         scale: scale
                     });
                     
@@ -763,6 +938,10 @@
                     document.getElementById('btn-toggle-cloud').disabled = false;
                     document.getElementById('btn-unload-cloud').disabled = false;
                     document.getElementById('btn-fit-cloud').disabled = false;
+                    
+                    // Enable clash detection section
+                    document.getElementById('clash-section').classList.remove('section-disabled');
+                    addLog('Clash detection section enabled', 'info');
                     
                     updateStats();
                     
@@ -810,6 +989,164 @@
                     viewer.fitToView();
                 }
             });
+            
+            // ================================================================
+            // ROTATION CONTROLS
+            // ================================================================
+            
+            // Helper function to update rotation
+            function updateCloudRotation() {
+                if (!potreeExt) return;
+                
+                const name = document.getElementById('cloud-name').value;
+                const rotX = parseFloat(document.getElementById('rot-x').value) * Math.PI / 180;
+                const rotY = parseFloat(document.getElementById('rot-y').value) * Math.PI / 180;
+                const rotZ = parseFloat(document.getElementById('rot-z').value) * Math.PI / 180;
+                
+                potreeExt.setRotation(name, rotX, rotY, rotZ);
+                addLog(`Rotation updated: X=${document.getElementById('rot-x').value}°, Y=${document.getElementById('rot-y').value}°, Z=${document.getElementById('rot-z').value}°`, 'info');
+            }
+            
+            // Rotation input change handlers
+            ['rot-x', 'rot-y', 'rot-z'].forEach(id => {
+                document.getElementById(id).addEventListener('change', updateCloudRotation);
+            });
+            
+            // Rotation quick buttons
+            const rotationStep = 15; // degrees
+            
+            document.getElementById('btn-rot-x-plus').addEventListener('click', () => {
+                const input = document.getElementById('rot-x');
+                input.value = parseFloat(input.value) + rotationStep;
+                updateCloudRotation();
+            });
+            
+            document.getElementById('btn-rot-x-minus').addEventListener('click', () => {
+                const input = document.getElementById('rot-x');
+                input.value = parseFloat(input.value) - rotationStep;
+                updateCloudRotation();
+            });
+            
+            document.getElementById('btn-rot-y-plus').addEventListener('click', () => {
+                const input = document.getElementById('rot-y');
+                input.value = parseFloat(input.value) + rotationStep;
+                updateCloudRotation();
+            });
+            
+            document.getElementById('btn-rot-y-minus').addEventListener('click', () => {
+                const input = document.getElementById('rot-y');
+                input.value = parseFloat(input.value) - rotationStep;
+                updateCloudRotation();
+            });
+            
+            document.getElementById('btn-rot-z-plus').addEventListener('click', () => {
+                const input = document.getElementById('rot-z');
+                input.value = parseFloat(input.value) + rotationStep;
+                updateCloudRotation();
+            });
+            
+            document.getElementById('btn-rot-z-minus').addEventListener('click', () => {
+                const input = document.getElementById('rot-z');
+                input.value = parseFloat(input.value) - rotationStep;
+                updateCloudRotation();
+            });
+            
+            document.getElementById('btn-rot-reset').addEventListener('click', () => {
+                document.getElementById('rot-x').value = 0;
+                document.getElementById('rot-y').value = 0;
+                document.getElementById('rot-z').value = 0;
+                updateCloudRotation();
+            });
+            
+            // ================================================================
+            // CLASH DETECTION CONTROLS
+            // ================================================================
+            
+            // Clash enabled checkbox
+            document.getElementById('clash-enabled').addEventListener('change', (e) => {
+                if (!clashExt) {
+                    addLog('Clash extension not loaded', 'warn');
+                    e.target.checked = false;
+                    return;
+                }
+                
+                if (e.target.checked) {
+                    clashExt.enable();
+                    setClashStatus(true);
+                    addLog('Clash detection enabled', 'success');
+                } else {
+                    clashExt.disable();
+                    setClashStatus(false);
+                    addLog('Clash detection disabled', 'info');
+                }
+            });
+            
+            // Epsilon slider
+            const epsilonSlider = document.getElementById('clash-epsilon');
+            const epsilonValue = document.getElementById('epsilon-value');
+            epsilonSlider.addEventListener('input', () => {
+                const value = parseFloat(epsilonSlider.value);
+                epsilonValue.textContent = value.toFixed(1);
+                if (clashExt) {
+                    clashExt.setEpsilon(value);
+                }
+            });
+            
+            // Sample rate slider
+            const sampleRateSlider = document.getElementById('clash-sample-rate');
+            const sampleRateValue = document.getElementById('sample-rate-value');
+            sampleRateSlider.addEventListener('input', () => {
+                const value = parseInt(sampleRateSlider.value);
+                sampleRateValue.textContent = value;
+                if (clashExt) {
+                    clashExt.setSampleRate(value / 100);
+                }
+            });
+            
+            // Intensity slider
+            const intensitySlider = document.getElementById('clash-intensity');
+            const intensityValue = document.getElementById('intensity-value');
+            intensitySlider.addEventListener('input', () => {
+                const value = parseFloat(intensitySlider.value);
+                intensityValue.textContent = value.toFixed(1);
+                if (clashExt) {
+                    clashExt.setIntensity(value);
+                }
+            });
+            
+            // Clash color selector
+            const clashColorSelect = document.getElementById('clash-color');
+            clashColorSelect.addEventListener('change', () => {
+                if (!clashExt) return;
+                
+                const colors = {
+                    'red': [1.0, 0.0, 0.0],
+                    'orange': [1.0, 0.5, 0.0],
+                    'yellow': [1.0, 1.0, 0.0],
+                    'magenta': [1.0, 0.0, 1.0],
+                    'cyan': [0.0, 1.0, 1.0]
+                };
+                
+                const color = colors[clashColorSelect.value] || [1.0, 0.0, 0.0];
+                clashExt.setClashColor(color[0], color[1], color[2]);
+                addLog(`Clash color set to: ${clashColorSelect.value}`, 'info');
+            });
+            
+            // Debug depth checkbox
+            document.getElementById('clash-debug').addEventListener('change', (e) => {
+                if (clashExt) {
+                    clashExt.setDebugDepth(e.target.checked);
+                    addLog(`Debug depth mode: ${e.target.checked ? 'ON' : 'OFF'}`, 'info');
+                }
+            });
+            
+            // Refresh button
+            document.getElementById('btn-clash-refresh').addEventListener('click', () => {
+                if (clashExt) {
+                    clashExt.refresh();
+                    addLog('Clash detection refreshed', 'info');
+                }
+            });
         }
         
         function fitToCloud(cloud) {
@@ -839,15 +1176,45 @@
             if (!potreeExt) return;
             
             const stats = potreeExt.getStats();
+            const lodConfig = potreeExt.getLODConfig();
             
             document.getElementById('stat-points').textContent = stats.totalPoints.toLocaleString();
             document.getElementById('stat-nodes').textContent = stats.totalNodes;
             document.getElementById('stat-clouds').textContent = stats.cloudsLoaded;
             document.getElementById('stat-budget').textContent = stats.pointBudget.toLocaleString();
+            document.getElementById('stat-min-node').textContent = lodConfig.minNodePixelSize;
+            document.getElementById('stat-refinement').textContent = lodConfig.refinementThreshold;
+            
+            // Calculate budget usage percentage
+            const budgetUsage = stats.pointBudget > 0 
+                ? Math.min(100, (stats.totalPoints / stats.pointBudget * 100)).toFixed(1) 
+                : 0;
+            const usageEl = document.getElementById('stat-budget-usage');
+            usageEl.textContent = budgetUsage + '%';
+            // Color code the usage
+            if (budgetUsage > 90) {
+                usageEl.style.color = '#f44336'; // red - near limit
+            } else if (budgetUsage > 70) {
+                usageEl.style.color = '#ff9800'; // orange - getting close
+            } else {
+                usageEl.style.color = '#4fc3f7'; // normal blue
+            }
         }
         
         // Update stats periodically
         setInterval(updateStats, 1000);
+        
+        // Update clash stats periodically
+        function updateClashStats() {
+            if (!clashExt) return;
+            
+            const stats = clashExt.getStats();
+            document.getElementById('clash-stat-checked').textContent = stats.totalPointsChecked.toLocaleString();
+            document.getElementById('clash-stat-clashes').textContent = stats.clashPointsFound.toLocaleString();
+            document.getElementById('clash-stat-near').textContent = stats.nearClashPointsFound.toLocaleString();
+            document.getElementById('clash-stat-time').textContent = stats.lastProcessingTime.toFixed(1);
+        }
+        setInterval(updateClashStats, 500);
         
         // ====================================================================
         // INITIALIZATION

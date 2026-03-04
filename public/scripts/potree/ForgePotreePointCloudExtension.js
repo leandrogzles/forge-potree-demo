@@ -18,12 +18,12 @@
     // ========================================================================
     
     const CONFIG = {
-        POINT_BUDGET: 10_000_000,          // Max points to render (increased significantly)
-        MAX_CONCURRENT_LOADS: 8,           // Concurrent bin fetches
-        MIN_NODE_PIXEL_SIZE: 20,           // Min screen size for node selection (very low for detail)
-        REFINEMENT_THRESHOLD: 80,          // Screen pixels threshold to refine (lower = more aggressive)
-        CACHE_SIZE: 200,                   // Max cached nodes
-        UPDATE_INTERVAL: 30,               // ms between scheduler updates (faster)
+        POINT_BUDGET: 20_000_000,          // Max points to render (high for detailed views)
+        MAX_CONCURRENT_LOADS: 24,// 12,          // Concurrent bin fetches (increased)
+        MIN_NODE_PIXEL_SIZE: 2,// 5,            // Min screen size for node selection (very low = more detail)
+        REFINEMENT_THRESHOLD: 30,          // Screen pixels threshold to refine (low = aggressive refinement)
+        CACHE_SIZE: 300,                   // Max cached nodes (increased)
+        UPDATE_INTERVAL: 25,               // ms between scheduler updates (faster)
         DEBUG: true,                       // Enable console logs
         DEBUG_LOD: true                    // Enable detailed LOD debug logs (TEMPORARY FOR DEBUG)
     };
@@ -659,8 +659,8 @@
             // Create material with optimized settings for LOD transitions
             const PointsMaterialClass = THREE.PointsMaterial || THREE.PointCloudMaterial;
             node.material = new PointsMaterialClass({
-                size: 3,                    // Slightly larger points fill gaps better
-                sizeAttenuation: true,      // Points scale with distance
+                size: 5,                    // Larger points to fill gaps when zooming in
+                sizeAttenuation: true,      // Points scale with distance (important!)
                 vertexColors: true,
                 depthWrite: true,           // Allow proper depth sorting
                 depthTest: true,
@@ -784,7 +784,7 @@
             const distance = camera.position.distanceTo(center);
             
             // Prevent division by zero
-            if (distance < 0.001) {
+            if (distance < 0.0000001) {
                 return Infinity;
             }
             
@@ -971,7 +971,9 @@
             // Phase 5: Queue loading for selected but unloaded nodes
             const nodesToLoad = [];
             for (const node of newSelectedNodes) {
-                if (!node.loaded && !node.loading && !node.failed && node.numPoints > 0) {
+                // FIXED: Don't require numPoints > 0 since it might not be set yet from hierarchy
+                // numPoints will be determined after loading the .bin file
+                if (!node.loaded && !node.loading && !node.failed) {
                     nodesToLoad.push(node);
                 }
             }
@@ -1014,7 +1016,7 @@
         _collectCandidates(node, camera, screenSize, candidates) {
             if (!node) return;
             
-            // Load hierarchy if needed
+            // Load hierarchy if needed (this is synchronous after first load)
             if (!node.hierarchyLoaded) {
                 this.hierarchyLoader.loadHierarchy(node);
             }
@@ -1028,7 +1030,11 @@
             const projectedSize = this._calculateScreenSpaceError(node, camera, screenSize);
             
             node.screenSize = projectedSize;
-            node.shouldRefine = projectedSize > CONFIG.REFINEMENT_THRESHOLD && node.hasChildren;
+            
+            // FIXED: Check if node has children OR if hierarchy might have more children
+            // The hierarchy file indicates if a node CAN have children via childMask
+            const canHaveChildren = node.hasChildren || !node.hierarchyLoaded;
+            node.shouldRefine = projectedSize > CONFIG.REFINEMENT_THRESHOLD && canHaveChildren;
             
             // Calculate distance for sorting
             const worldBox = node.boundingBox.clone();
@@ -1047,8 +1053,15 @@
                 });
             }
             
-            // Recurse to children if node should be refined
-            if (node.shouldRefine || node.level < 2) {
+            // FIXED: More aggressive recursion - recurse if:
+            // 1. Node should be refined (large on screen and has/might have children), OR
+            // 2. Node is at low level (always explore top levels), OR
+            // 3. Hierarchy not loaded yet but screen size is significant (need to explore)
+            const shouldRecurse = node.shouldRefine || 
+                                  node.level < 3 || 
+                                  (projectedSize > CONFIG.MIN_NODE_PIXEL_SIZE * 2 && node.hierarchyLoaded);
+            
+            if (shouldRecurse) {
                 for (const child of node.children) {
                     if (child) {
                         this._collectCandidates(child, camera, screenSize, candidates);
@@ -1110,17 +1123,27 @@
             const camera = this.extension.viewer.impl.camera;
             const camPos = camera.position;
             
+            // Count levels represented
+            const levelCounts = {};
+            let maxLevel = 0;
+            for (const node of this.visibleNodes) {
+                levelCounts[node.level] = (levelCounts[node.level] || 0) + 1;
+                maxLevel = Math.max(maxLevel, node.level);
+            }
+            
             console.log('[PotreeScheduler LOD]', {
                 frame: this.frameCount,
                 camDist: camPos.length().toFixed(1),
                 selected: this._debugStats.selectedCount,
                 visible: this._debugStats.visibleCount,
-                loading: this._debugStats.loadingCount,
+                loading: this.loadingNodes.size,
                 points: this._debugStats.totalPoints.toLocaleString(),
                 refined: this._debugStats.refinedCount,
                 keptParents: this._debugStats.keptParentsCount,
-                unloaded: this._debugStats.unloadedCount,
-                budget: CONFIG.POINT_BUDGET.toLocaleString()
+                maxLevel: maxLevel,
+                levelDist: Object.entries(levelCounts).map(([l, c]) => `L${l}:${c}`).join(' '),
+                budget: CONFIG.POINT_BUDGET.toLocaleString(),
+                budgetUsage: ((this._debugStats.totalPoints / CONFIG.POINT_BUDGET) * 100).toFixed(1) + '%'
             });
         }
 
@@ -1454,6 +1477,177 @@
             
             this.viewer.impl.invalidate(true);
             log(`Extension enabled: ${enabled}`);
+        }
+
+        /**
+         * Set rotation for a cloud (in radians)
+         * @param {string} name - Name of the cloud
+         * @param {number} x - Rotation around X axis (radians)
+         * @param {number} y - Rotation around Y axis (radians)
+         * @param {number} z - Rotation around Z axis (radians)
+         */
+        setRotation(name, x, y, z) {
+            // Potree 1.x
+            const cloud = this.clouds.get(name);
+            if (cloud) {
+                cloud.rotation.set(x, y, z);
+                cloud.updateMatrixWorld();
+                
+                // Update all visible nodes with new matrix
+                const scheduler = this.schedulers.get(name);
+                if (scheduler) {
+                    for (const node of scheduler.visibleNodes) {
+                        if (node.points) {
+                            node.points.matrix.copy(cloud.matrixWorld);
+                            node.points.matrixWorld.copy(cloud.matrixWorld);
+                        }
+                    }
+                }
+                
+                this.viewer.impl.invalidate(true);
+                log(`Rotation set for '${name}': (${(x * 180 / Math.PI).toFixed(1)}°, ${(y * 180 / Math.PI).toFixed(1)}°, ${(z * 180 / Math.PI).toFixed(1)}°)`);
+                return;
+            }
+            
+            // Potree 2.0
+            const cloud2 = this.clouds2.get(name);
+            if (cloud2) {
+                cloud2.rotation.set(x, y, z);
+                cloud2.updateMatrixWorld();
+                
+                // Update all visible nodes with new matrix
+                const scheduler2 = this.potree2Loader?.getScheduler(name);
+                if (scheduler2) {
+                    for (const node of scheduler2.visibleNodes) {
+                        if (node.points) {
+                            node.points.matrix.copy(cloud2.matrixWorld);
+                            node.points.matrixWorld.copy(cloud2.matrixWorld);
+                        }
+                    }
+                }
+                
+                this.viewer.impl.invalidate(true);
+                log(`Rotation set for '${name}': (${(x * 180 / Math.PI).toFixed(1)}°, ${(y * 180 / Math.PI).toFixed(1)}°, ${(z * 180 / Math.PI).toFixed(1)}°)`);
+            }
+        }
+
+        /**
+         * Set position for a cloud
+         * @param {string} name - Name of the cloud
+         * @param {number} x - X position
+         * @param {number} y - Y position
+         * @param {number} z - Z position
+         */
+        setPosition(name, x, y, z) {
+            // Potree 1.x
+            const cloud = this.clouds.get(name);
+            if (cloud) {
+                cloud.position.set(x, y, z);
+                cloud.updateMatrixWorld();
+                
+                // Update all visible nodes with new matrix
+                const scheduler = this.schedulers.get(name);
+                if (scheduler) {
+                    for (const node of scheduler.visibleNodes) {
+                        if (node.points) {
+                            node.points.matrix.copy(cloud.matrixWorld);
+                            node.points.matrixWorld.copy(cloud.matrixWorld);
+                        }
+                    }
+                }
+                
+                this.viewer.impl.invalidate(true);
+                log(`Position set for '${name}': (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})`);
+                return;
+            }
+            
+            // Potree 2.0
+            const cloud2 = this.clouds2.get(name);
+            if (cloud2) {
+                cloud2.position.set(x, y, z);
+                cloud2.updateMatrixWorld();
+                
+                // Update all visible nodes with new matrix
+                const scheduler2 = this.potree2Loader?.getScheduler(name);
+                if (scheduler2) {
+                    for (const node of scheduler2.visibleNodes) {
+                        if (node.points) {
+                            node.points.matrix.copy(cloud2.matrixWorld);
+                            node.points.matrixWorld.copy(cloud2.matrixWorld);
+                        }
+                    }
+                }
+                
+                this.viewer.impl.invalidate(true);
+                log(`Position set for '${name}': (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})`);
+            }
+        }
+
+        /**
+         * Set scale for a cloud
+         * @param {string} name - Name of the cloud
+         * @param {number} scale - Uniform scale factor
+         */
+        setScale(name, scale) {
+            // Potree 1.x
+            const cloud = this.clouds.get(name);
+            if (cloud) {
+                cloud.scale3.set(scale, scale, scale);
+                cloud.updateMatrixWorld();
+                
+                // Update all visible nodes with new matrix
+                const scheduler = this.schedulers.get(name);
+                if (scheduler) {
+                    for (const node of scheduler.visibleNodes) {
+                        if (node.points) {
+                            node.points.matrix.copy(cloud.matrixWorld);
+                            node.points.matrixWorld.copy(cloud.matrixWorld);
+                        }
+                    }
+                }
+                
+                this.viewer.impl.invalidate(true);
+                log(`Scale set for '${name}': ${scale.toFixed(2)}`);
+                return;
+            }
+            
+            // Potree 2.0
+            const cloud2 = this.clouds2.get(name);
+            if (cloud2) {
+                cloud2.scale3.set(scale, scale, scale);
+                cloud2.updateMatrixWorld();
+                
+                // Update all visible nodes with new matrix
+                const scheduler2 = this.potree2Loader?.getScheduler(name);
+                if (scheduler2) {
+                    for (const node of scheduler2.visibleNodes) {
+                        if (node.points) {
+                            node.points.matrix.copy(cloud2.matrixWorld);
+                            node.points.matrixWorld.copy(cloud2.matrixWorld);
+                        }
+                    }
+                }
+                
+                this.viewer.impl.invalidate(true);
+                log(`Scale set for '${name}': ${scale.toFixed(2)}`);
+            }
+        }
+
+        /**
+         * Get current transform of a cloud
+         * @param {string} name - Name of the cloud
+         * @returns {Object|null} Transform object with position, rotation, scale
+         */
+        getTransform(name) {
+            const cloud = this.clouds.get(name) || this.clouds2.get(name);
+            if (cloud) {
+                return {
+                    position: cloud.position.clone(),
+                    rotation: cloud.rotation.clone(),
+                    scale: cloud.scale3.clone()
+                };
+            }
+            return null;
         }
 
         /**
