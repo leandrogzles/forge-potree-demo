@@ -507,23 +507,26 @@
             progressSection.style.display = 'block';
             resultSection.style.display = 'none';
             errorSection.style.display = 'none';
+            progressBar.classList.remove('bg-success', 'bg-danger');
+            progressBar.classList.add('progress-bar-animated');
             
             const formData = new FormData();
             formData.append('file', selectedFile);
             
             try {
-                const xhr = new XMLHttpRequest();
-                
-                xhr.upload.addEventListener('progress', (e) => {
-                    if (e.lengthComputable) {
-                        const percent = Math.round((e.loaded / e.total) * 50);
-                        progressBar.style.width = percent + '%';
-                        progressBar.textContent = percent + '%';
-                        statusText.textContent = 'Enviando arquivo...';
-                    }
-                });
-                
-                const response = await new Promise((resolve, reject) => {
+                // Phase 1: Upload file
+                const uploadResponse = await new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    
+                    xhr.upload.addEventListener('progress', (e) => {
+                        if (e.lengthComputable) {
+                            const percent = Math.round((e.loaded / e.total) * 100);
+                            progressBar.style.width = percent + '%';
+                            progressBar.textContent = `Enviando: ${percent}%`;
+                            statusText.textContent = 'Enviando arquivo...';
+                        }
+                    });
+                    
                     xhr.onload = () => {
                         if (xhr.status >= 200 && xhr.status < 300) {
                             try {
@@ -545,45 +548,44 @@
                     xhr.ontimeout = () => reject(new Error('Timeout'));
                     
                     xhr.open('POST', '/api/las/upload');
-                    xhr.timeout = 30 * 60 * 1000;
+                    xhr.timeout = 10 * 60 * 1000;
                     xhr.send(formData);
-                    
-                    // Simulate conversion progress
-                    let progress = 50;
-                    const interval = setInterval(() => {
-                        if (xhr.readyState === 4) {
-                            clearInterval(interval);
-                            return;
-                        }
-                        progress = Math.min(95, progress + Math.random() * 5);
-                        progressBar.style.width = progress + '%';
-                        progressBar.textContent = Math.round(progress) + '%';
-                        statusText.textContent = 'Convertendo para Potree...';
-                    }, 1000);
                 });
                 
-                if (response.success) {
+                if (!uploadResponse.success) {
+                    throw new Error(uploadResponse.error || 'Upload falhou');
+                }
+                
+                const datasetId = uploadResponse.datasetId;
+                statusText.textContent = 'Convertendo para Potree...';
+                progressBar.style.width = '0%';
+                progressBar.textContent = 'Convertendo: 0%';
+                
+                // Phase 2: Poll for conversion progress
+                const finalStatus = await pollConversionStatus(datasetId);
+                
+                if (finalStatus.status === 'completed') {
                     progressBar.style.width = '100%';
                     progressBar.textContent = '100%';
                     progressBar.classList.remove('progress-bar-animated');
                     progressBar.classList.add('bg-success');
                     statusText.textContent = 'Conversão concluída!';
                     
-                    document.getElementById('result-id').textContent = response.datasetId;
+                    document.getElementById('result-id').textContent = finalStatus.datasetId;
                     document.getElementById('result-points').textContent = 
-                        response.metadata?.points?.toLocaleString() || 'N/A';
+                        finalStatus.metadata?.points?.toLocaleString() || 'N/A';
                     document.getElementById('result-format').textContent = 
-                        response.potreeFormat === '2.0' ? 'Potree 2.0' : 'Potree 1.x';
-                    document.getElementById('result-url').textContent = response.cloudJsUrl;
+                        finalStatus.potreeFormat === '2.0' ? 'Potree 2.0' : 'Potree 1.x';
+                    document.getElementById('result-url').textContent = finalStatus.cloudJsUrl;
                     document.getElementById('result-duration').textContent = 
-                        (response.duration / 1000).toFixed(1) + 's';
+                        finalStatus.totalDuration ? (finalStatus.totalDuration / 1000).toFixed(1) + 's' : 'N/A';
                     
-                    lastResultUrl = response.cloudJsUrl;
+                    lastResultUrl = finalStatus.cloudJsUrl;
                     resultSection.style.display = 'block';
                     
                     loadDatasets();
                 } else {
-                    throw new Error(response.error || 'Conversão falhou');
+                    throw new Error(finalStatus.error || 'Conversão falhou');
                 }
                 
             } catch (error) {
@@ -596,6 +598,51 @@
             }
             
             uploadBtn.disabled = false;
+        }
+        
+        // Poll conversion status until complete
+        async function pollConversionStatus(datasetId) {
+            const maxAttempts = 600; // 10 minutes max (600 * 1000ms)
+            let attempts = 0;
+            
+            while (attempts < maxAttempts) {
+                try {
+                    const response = await fetch(`/api/las/status/${datasetId}`);
+                    
+                    if (response.status === 404) {
+                        throw new Error('Dataset não encontrado');
+                    }
+                    
+                    const status = await response.json();
+                    
+                    // Update progress bar with real conversion progress
+                    const progress = Math.round(status.progress || 0);
+                    progressBar.style.width = progress + '%';
+                    progressBar.textContent = `Convertendo: ${progress}%`;
+                    
+                    if (status.status === 'completed') {
+                        return status;
+                    }
+                    
+                    if (status.status === 'failed') {
+                        throw new Error(status.error || 'Conversão falhou');
+                    }
+                    
+                    // Wait before next poll
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    attempts++;
+                    
+                } catch (error) {
+                    if (error.message === 'Dataset não encontrado') {
+                        throw error;
+                    }
+                    console.warn('Polling error:', error);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    attempts++;
+                }
+            }
+            
+            throw new Error('Timeout aguardando conversão');
         }
         
         uploadBtn.addEventListener('click', uploadFile);

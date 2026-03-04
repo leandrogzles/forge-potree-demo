@@ -32,19 +32,21 @@ class LASUploadController {
     }
 
     /**
-     * Handle file upload request
+     * Handle file upload request (async mode - returns immediately, processes in background)
      * @param {Object} file - Multer file object
      * @param {Object} options - Upload options
+     * @param {boolean} options.async - If true, returns immediately and processes in background
      * @returns {Promise<UploadResult>}
      */
     async handleUpload(file, options = {}) {
-        const datasetId = uuidv4();
+        const datasetId = this._generateDatasetId(file.originalname);
         
         console.log(`${LOG_PREFIX} Processing upload:`, {
             datasetId,
             originalName: file.originalname,
             size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
-            mimetype: file.mimetype
+            mimetype: file.mimetype,
+            async: options.async || false
         });
 
         try {
@@ -56,10 +58,64 @@ class LASUploadController {
                 originalName: file.originalname,
                 fileSize: file.size,
                 uploadTime: Date.now(),
-                progress: 0
+                progress: 0,
+                filePath: file.path
             };
             this.pendingUploads.set(datasetId, uploadInfo);
 
+            if (options.async) {
+                this._processInBackground(file, datasetId, options);
+                return {
+                    success: true,
+                    datasetId,
+                    originalName: file.originalname,
+                    status: 'processing',
+                    message: 'Upload received, conversion started in background'
+                };
+            }
+
+            return await this._processAndComplete(file, datasetId, options);
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Upload failed:`, {
+                datasetId,
+                error: error.message
+            });
+
+            const uploadInfo = this.pendingUploads.get(datasetId);
+            if (uploadInfo) {
+                uploadInfo.status = 'failed';
+                uploadInfo.error = error.message;
+            }
+
+            await this._cleanupTempFile(file.path);
+            await datasetStorageService.cleanupTemp(datasetId);
+
+            return {
+                success: false,
+                datasetId,
+                error: error.message
+            };
+        }
+    }
+
+    /**
+     * Process conversion and storage in background (non-blocking)
+     */
+    _processInBackground(file, datasetId, options) {
+        this._processAndComplete(file, datasetId, options)
+            .catch(error => {
+                console.error(`${LOG_PREFIX} Background processing failed:`, error);
+            });
+    }
+
+    /**
+     * Full processing pipeline (conversion + storage)
+     */
+    async _processAndComplete(file, datasetId, options) {
+        const uploadInfo = this.pendingUploads.get(datasetId);
+
+        try {
             const conversionResult = await this._processConversion(file, datasetId, options);
 
             if (!conversionResult.success) {
@@ -76,17 +132,21 @@ class LASUploadController {
                 await this._cleanupTempFile(file.path);
             }
 
-            uploadInfo.status = 'completed';
-            uploadInfo.cloudJsUrl = storageResult.cloudJsUrl;
-            uploadInfo.metadata = conversionResult.metadata;
-            uploadInfo.completionTime = Date.now();
-            uploadInfo.totalDuration = uploadInfo.completionTime - uploadInfo.uploadTime;
+            if (uploadInfo) {
+                uploadInfo.status = 'completed';
+                uploadInfo.progress = 100;
+                uploadInfo.cloudJsUrl = storageResult.cloudJsUrl;
+                uploadInfo.potreeFormat = conversionResult.potreeFormat;
+                uploadInfo.metadata = conversionResult.metadata;
+                uploadInfo.completionTime = Date.now();
+                uploadInfo.totalDuration = uploadInfo.completionTime - uploadInfo.uploadTime;
+            }
 
             console.log(`${LOG_PREFIX} Upload completed:`, {
                 datasetId,
                 cloudJsUrl: storageResult.cloudJsUrl,
                 potreeFormat: conversionResult.potreeFormat,
-                duration: `${uploadInfo.totalDuration}ms`,
+                duration: `${uploadInfo?.totalDuration}ms`,
                 points: conversionResult.metadata?.points
             });
 
@@ -97,16 +157,15 @@ class LASUploadController {
                 potreeFormat: conversionResult.potreeFormat,
                 originalName: file.originalname,
                 metadata: conversionResult.metadata,
-                duration: uploadInfo.totalDuration
+                duration: uploadInfo?.totalDuration
             };
 
         } catch (error) {
-            console.error(`${LOG_PREFIX} Upload failed:`, {
+            console.error(`${LOG_PREFIX} Processing failed:`, {
                 datasetId,
                 error: error.message
             });
 
-            const uploadInfo = this.pendingUploads.get(datasetId);
             if (uploadInfo) {
                 uploadInfo.status = 'failed';
                 uploadInfo.error = error.message;
@@ -150,6 +209,22 @@ class LASUploadController {
             ext,
             size: file.size
         });
+    }
+
+    /**
+     * Generate dataset ID based on original filename
+     * Sanitizes the filename and adds a short unique suffix to avoid collisions
+     */
+    _generateDatasetId(originalName) {
+        const baseName = path.basename(originalName, path.extname(originalName));
+        const sanitized = baseName
+            .replace(/[^a-zA-Z0-9_-]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_|_$/g, '')
+            .substring(0, 50);
+        
+        const shortId = uuidv4().split('-')[0];
+        return `${sanitized}_${shortId}`;
     }
 
     /**
@@ -214,7 +289,10 @@ class LASUploadController {
                 fileSize: uploadInfo.fileSize,
                 uploadTime: uploadInfo.uploadTime,
                 cloudJsUrl: uploadInfo.cloudJsUrl,
-                error: uploadInfo.error
+                potreeFormat: uploadInfo.potreeFormat,
+                metadata: uploadInfo.metadata,
+                error: uploadInfo.error,
+                totalDuration: uploadInfo.totalDuration
             };
         }
 

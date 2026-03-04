@@ -78,6 +78,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         });
 
         const options = {
+            async: true,
             conversionOptions: {
                 spacing: req.body.spacing ? parseFloat(req.body.spacing) : undefined,
                 maxDepth: req.body.maxDepth ? parseInt(req.body.maxDepth) : undefined,
@@ -87,23 +88,13 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
         const result = await lasUploadController.handleUpload(req.file, options);
 
-        if (result.success) {
-            res.json({
-                success: true,
-                datasetId: result.datasetId,
-                cloudJsUrl: result.cloudJsUrl,
-                potreeFormat: result.potreeFormat,
-                originalName: result.originalName,
-                metadata: result.metadata,
-                duration: result.duration
-            });
-        } else {
-            res.status(500).json({
-                success: false,
-                datasetId: result.datasetId,
-                error: result.error
-            });
-        }
+        res.json({
+            success: true,
+            datasetId: result.datasetId,
+            originalName: result.originalName,
+            status: result.status || 'processing',
+            message: result.message || 'Upload received, use /api/las/status/:id to track progress'
+        });
 
     } catch (error) {
         console.error('[LAS API] Upload error:', error);
