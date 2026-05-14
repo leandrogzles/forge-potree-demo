@@ -66,6 +66,7 @@
             this.matrixWorld = new THREE.Matrix4();
             
             this.visible = true;
+            this.pointSize = 3;
             
             log('Potree2PointCloud created:', {
                 name: this.name,
@@ -123,6 +124,7 @@
             this.numPoints = 0;
             this.byteOffset = 0;
             this.byteSize = 0;
+            this.spacing = cloud.spacing / Math.pow(2, this.level);
             
             this.loaded = false;
             this.loading = false;
@@ -247,6 +249,18 @@
             
             return { root, nodes };
         }
+
+        parseChunk(hierarchyBuffer, root) {
+            const view = new DataView(hierarchyBuffer);
+            const bufferSize = hierarchyBuffer.byteLength;
+            const nodes = new Map();
+            nodes.set(root.name, root);
+
+            const result = this._parseNodeRecursive(view, 0, root, nodes, bufferSize);
+            log(`Hierarchy chunk parsed for ${root.name}: ${nodes.size} nodes, consumed ${result.nextOffset} bytes`);
+
+            return { root, nodes };
+        }
         
         /**
          * Recursively parse node and all its children (depth-first)
@@ -273,6 +287,8 @@
             
             node.numPoints = numPoints;
             node.nodeType = type;
+            node.children.fill(null);
+            node.hasChildren = false;
             
             // For PROXY nodes: byteOffset/byteSize point to hierarchy.bin chunk
             // For NORMAL/LEAF: byteOffset/byteSize point to octree.bin data
@@ -283,6 +299,7 @@
                 // Point data location will be determined when loading children
                 node.byteOffset = 0;
                 node.byteSize = 0;
+                return { nextOffset: offset + this.bytesPerNode };
             } else {
                 node.byteOffset = byteOffset;
                 node.byteSize = byteSize;
@@ -296,25 +313,7 @@
                 if (childMask & (1 << i)) childCount++;
             }
             
-            if (type === NODE_TYPE.PROXY && childCount > 0) {
-                // PROXY: children are at a different location in the buffer
-                // Parse children from the proxy's hierarchy chunk
-                let childOffset = byteOffset;
-                
-                for (let i = 0; i < 8; i++) {
-                    if (childMask & (1 << i)) {
-                        const childName = node.getChildName(i);
-                        const child = new Potree2Node(childName, this.cloud, node);
-                        node.addChild(i, child);
-                        nodes.set(childName, child);
-                        
-                        // Recursively parse child at the proxy offset
-                        const result = this._parseNodeRecursive(view, childOffset, child, nodes, bufferSize);
-                        childOffset = result.nextOffset;
-                    }
-                }
-                // Note: currentOffset stays the same since children are elsewhere
-            } else if (childCount > 0) {
+            if (childCount > 0) {
                 // NORMAL or LEAF with children: children follow inline
                 for (let i = 0; i < 8; i++) {
                     if (childMask & (1 << i)) {
@@ -339,9 +338,10 @@
     // ========================================================================
 
     class Potree2NodeLoader {
-        constructor(cloud, octreeUrl) {
+        constructor(cloud, octreeUrl, hierarchyUrl) {
             this.cloud = cloud;
             this.octreeUrl = octreeUrl;  // URL instead of buffer - enables streaming large files
+            this.hierarchyUrl = hierarchyUrl;
             this.loading = new Map();
             this.cache = new Map();      // Cache loaded node buffers
             this.maxCacheSize = 100;     // Max nodes to cache
@@ -356,11 +356,14 @@
 
             const promise = (async () => {
                 try {
-                    // Skip PROXY nodes (they don't have point data directly)
                     if (node.nodeType === NODE_TYPE.PROXY) {
-                        node.loaded = true;
-                        node.loading = false;
-                        return;
+                        await this._loadHierarchyChunk(node);
+                        
+                        if (node.nodeType === NODE_TYPE.PROXY || node.byteSize === 0) {
+                            node.loaded = true;
+                            node.loading = false;
+                            return;
+                        }
                     }
                     
                     // Check if node has data to load
@@ -414,6 +417,42 @@
             
             this.loading.set(node.name, promise);
             return promise;
+        }
+
+        async _loadHierarchyChunk(node) {
+            if (node.hierarchyLoaded || !node.hierarchyByteSize) {
+                return;
+            }
+
+            const startByte = node.hierarchyByteOffset;
+            const endByte = node.hierarchyByteOffset + node.hierarchyByteSize - 1;
+
+            log(`Loading hierarchy chunk ${node.name}: bytes ${startByte}-${endByte}`);
+
+            const response = await fetch(this.hierarchyUrl, {
+                headers: {
+                    'Range': `bytes=${startByte}-${endByte}`
+                }
+            });
+
+            if (!response.ok && response.status !== 206) {
+                throw new Error(`HTTP ${response.status} for hierarchy range request`);
+            }
+
+            const buffer = await response.arrayBuffer();
+            const parser = new Potree2HierarchyParser(this.cloud);
+            const { nodes } = parser.parseChunk(buffer, node);
+
+            if (!this.cloud.nodes) {
+                this.cloud.nodes = new Map();
+            }
+
+            for (const [name, parsedNode] of nodes) {
+                this.cloud.nodes.set(name, parsedNode);
+            }
+
+            node.hierarchyLoaded = true;
+            node.failed = false;
         }
 
         _decodeBuffer(node, buffer) {
@@ -503,8 +542,8 @@
             // Create material with optimized settings for LOD transitions
             const PointsMaterialClass = THREE.PointsMaterial || THREE.PointCloudMaterial;
             node.material = new PointsMaterialClass({
-                size: 5,                    // Larger points to fill gaps when zooming in
-                sizeAttenuation: true,      // Points scale with distance (important!)
+                size: this.cloud.pointSize,
+                sizeAttenuation: false,
                 vertexColors: true,
                 depthWrite: true,           // Allow proper depth sorting
                 depthTest: true,
@@ -548,19 +587,19 @@
     // ========================================================================
 
     const POTREE2_CONFIG = {
-        POINT_BUDGET: 15_000_000,          // Max points to render (increased)
-        MAX_CONCURRENT_LOADS: 10,          // Concurrent loads (increased)
-        MIN_NODE_PIXEL_SIZE: 10,           // Min screen size for selection (lowered)
-        REFINEMENT_THRESHOLD: 50,          // Screen pixels threshold to refine (lowered)
+        POINT_BUDGET: 80_000_000,          // Max points to render
+        MAX_CONCURRENT_LOADS: 24,          // Concurrent range fetches
+        MIN_NODE_PIXEL_SIZE: 1,            // Lower = denser visible detail
+        REFINEMENT_THRESHOLD: 10,          // Lower = more aggressive child loading
         UPDATE_INTERVAL: 30,               // ms between updates (faster)
         DEBUG_LOD: true                    // Enable LOD debug logs (for debugging)
     };
 
     class Potree2Scheduler {
-        constructor(cloud, extension, octreeUrl) {
+        constructor(cloud, extension, octreeUrl, hierarchyUrl) {
             this.cloud = cloud;
             this.extension = extension;
-            this.nodeLoader = new Potree2NodeLoader(cloud, octreeUrl);  // Uses URL for streaming
+            this.nodeLoader = new Potree2NodeLoader(cloud, octreeUrl, hierarchyUrl);  // Uses URL for streaming
             
             this.visibleNodes = new Set();       // Nodes currently in scene
             this.loadingNodes = new Set();       // Nodes being loaded
@@ -643,7 +682,7 @@
                 return false;
             }
             
-            return loadedChildrenCount >= 1;
+            return loadedChildrenCount === totalChildrenCount;
         }
 
         /**
@@ -726,17 +765,18 @@
             const candidates = [];
             this._collectCandidates(this.cloud.root, camera, screenSize, candidates);
             
-            // Phase 2: Sort by priority (closer/bigger first)
+            // Phase 2: Prefer finer octree levels first. Density comes from loaded
+            // children; parents are only fallback while children stream in.
             candidates.sort((a, b) => {
-                // Prioritize closer nodes at any level
-                if (a.distance !== b.distance) {
-                    return a.distance - b.distance;
+                if (a.level !== b.level) {
+                    return b.level - a.level;
                 }
-                // Then by screen size
-                return b.screenSize - a.screenSize;
+                if (Math.abs(a.screenSize - b.screenSize) > 1) {
+                    return b.screenSize - a.screenSize;
+                }
+                return a.distance - b.distance;
             });
             
-            // Debug: Log candidates count and details
             if (this.frameCount < 10 || (POTREE2_CONFIG.DEBUG_LOD && this.frameCount % 60 === 0)) {
                 console.log(`[Potree2] Phase 1: ${candidates.length} candidates collected`);
                 console.log(`[Potree2] Candidates by level:`, candidates.reduce((acc, c) => {
@@ -745,19 +785,21 @@
                 }, {}));
             }
             
-            // Phase 3: Select ALL candidates (no budget filtering for now - debugging)
+            // Phase 3: Select candidates inside point budget.
             const newSelectedNodes = new Set();
             let totalPoints = 0;
             
             for (const candidate of candidates) {
                 const node = candidate.node;
-                newSelectedNodes.add(node);
-                totalPoints += node.numPoints;
+                const pointCount = node.numPoints || 0;
+                const wouldExceedBudget = totalPoints + pointCount > POTREE2_CONFIG.POINT_BUDGET;
                 
-                // Only apply budget to VERY excessive cases
-                if (totalPoints > POTREE2_CONFIG.POINT_BUDGET * 2) {
-                    break;
+                if (wouldExceedBudget && newSelectedNodes.size > 0) {
+                    continue;
                 }
+                
+                newSelectedNodes.add(node);
+                totalPoints += pointCount;
             }
             
             this._debugStats.selectedCount = newSelectedNodes.size;
@@ -772,52 +814,30 @@
                 }
             }
             
-            // Phase 4: Safe parent/child visibility management
+            // Phase 4: Visibility management. Keep every loaded selected node visible.
+            // Potree 2.0 hierarchy chunks can stream in out of order; hiding parents
+            // aggressively while child branches are still proxy/failed can leave a
+            // completely blank overlay.
             const finalVisibleNodes = new Set();
             
             for (const node of newSelectedNodes) {
-                const parent = node.parent;
-                
                 if (node.loaded && node.points) {
                     finalVisibleNodes.add(node);
                     node.lastVisibleTime = now;
-                }
-                
-                if (parent && parent.loaded && parent.points) {
-                    const shouldRefineParent = this._shouldRefine(parent, screenSize);
-                    
-                    if (shouldRefineParent) {
-                        if (this._childrenLoadedEnough(parent)) {
-                            this._debugStats.refinedCount++;
-                        } else {
-                            if (!finalVisibleNodes.has(parent)) {
-                                finalVisibleNodes.add(parent);
-                                this._debugStats.keptParentsCount++;
-                            }
-                        }
+                } else if (!node.loaded) {
+                    const fallback = this._getNearestLoadedAncestor(node);
+                    if (fallback && fallback.points) {
+                        finalVisibleNodes.add(fallback);
+                        this._debugStats.keptParentsCount++;
                     }
                 }
             }
             
-            // Keep currently visible parents if children aren't ready
+            // Keep currently visible nodes until replacement nodes have point geometry.
             for (const node of this.visibleNodes) {
                 if (!finalVisibleNodes.has(node) && node.loaded && node.points) {
-                    let childrenInSelection = 0;
-                    let childrenLoaded = 0;
-                    
-                    for (const child of node.children) {
-                        if (child && newSelectedNodes.has(child)) {
-                            childrenInSelection++;
-                            if (child.loaded && child.points) {
-                                childrenLoaded++;
-                            }
-                        }
-                    }
-                    
-                    if (childrenInSelection > 0 && childrenLoaded < childrenInSelection) {
-                        finalVisibleNodes.add(node);
-                        this._debugStats.keptParentsCount++;
-                    }
+                    finalVisibleNodes.add(node);
+                    this._debugStats.keptParentsCount++;
                 }
             }
             
@@ -825,7 +845,7 @@
             // FIXED: Don't require numPoints > 0 since it's determined after loading
             const nodesToLoad = [];
             for (const node of newSelectedNodes) {
-                if (!node.loaded && !node.loading && !node.failed) {
+                if (!node.loaded && !node.loading) {
                     nodesToLoad.push(node);
                 }
             }
@@ -835,7 +855,7 @@
                 if (node.shouldRefine && node.hasChildren) {
                     for (const child of node.children) {
                         // FIXED: Don't require numPoints > 0
-                        if (child && !child.loaded && !child.loading && !child.failed) {
+                        if (child && !child.loaded && !child.loading) {
                             if (!nodesToLoad.includes(child)) {
                                 nodesToLoad.push(child);
                             }
@@ -844,8 +864,16 @@
                 }
             }
             
-            // Sort by distance (closer first)
-            nodesToLoad.sort((a, b) => (a.distance || Infinity) - (b.distance || Infinity));
+            // Load finest visible nodes first.
+            nodesToLoad.sort((a, b) => {
+                if (a.level !== b.level) {
+                    return b.level - a.level;
+                }
+                if (Math.abs((a.screenSize || 0) - (b.screenSize || 0)) > 1) {
+                    return (b.screenSize || 0) - (a.screenSize || 0);
+                }
+                return (a.distance || Infinity) - (b.distance || Infinity);
+            });
             
             // Debug: Check loading queue and WHY nodes aren't being queued
             if (this.frameCount < 10 || (POTREE2_CONFIG.DEBUG_LOD && this.frameCount % 60 === 0)) {
@@ -898,6 +926,35 @@
             }
         }
 
+        _selectedChildrenCoverNode(node, selectedNodes) {
+            if (!node.hasChildren) {
+                return false;
+            }
+
+            let childCount = 0;
+            for (const child of node.children) {
+                if (child) {
+                    childCount++;
+                    if (!selectedNodes.has(child) || !child.loaded || !child.points) {
+                        return false;
+                    }
+                }
+            }
+
+            return childCount > 0;
+        }
+
+        _getNearestLoadedAncestor(node) {
+            let current = node.parent;
+            while (current) {
+                if (current.loaded && current.points) {
+                    return current;
+                }
+                current = current.parent;
+            }
+            return null;
+        }
+
         _collectCandidates(node, camera, screenSize, candidates, depth = 0) {
             if (!node) return;
             
@@ -927,9 +984,7 @@
                 console.log(`[Collect] ${node.name}: depth=${depth}, dist=${distance.toFixed(1)}, screenSize=${projectedSize.toFixed(0)}, hasChildren=${node.hasChildren}, childCount=${node.children.filter(c=>c).length}, children=[${childNames}]`);
             }
             
-            // Add ALL nodes to candidates if not too far
-            // Much more inclusive
-            const shouldAdd = distance < 500 || projectedSize > 5 || node.level === 0;
+            const shouldAdd = projectedSize > POTREE2_CONFIG.MIN_NODE_PIXEL_SIZE || node.level === 0;
             if (shouldAdd) {
                 candidates.push({
                     node: node,
@@ -939,12 +994,16 @@
                 });
             }
             
-            // Determine if should refine
-            const isClose = distance < 200;
-            node.shouldRefine = node.hasChildren && (projectedSize > 20 || isClose || node.level < 4);
+            node.shouldRefine = node.hasChildren && (
+                projectedSize > POTREE2_CONFIG.REFINEMENT_THRESHOLD ||
+                node.level < this.cloud.hierarchy.depth
+            );
             
-            // ALWAYS try to recurse to children for close-up or low-level nodes
-            const shouldRecurse = node.hasChildren && (node.shouldRefine || node.level < 5 || isClose);
+            const shouldRecurse = node.hasChildren && (
+                node.shouldRefine ||
+                projectedSize > POTREE2_CONFIG.MIN_NODE_PIXEL_SIZE ||
+                node.level < this.cloud.hierarchy.depth
+            );
             
             if (shouldRecurse) {
                 let actualChildCount = 0;
@@ -1107,6 +1166,9 @@
                         cloud.scale3.copy(options.scale);
                     }
                 }
+                if (options.pointSize) {
+                    cloud.pointSize = options.pointSize;
+                }
                 cloud.updateMatrixWorld();
                 
                 log('Loading hierarchy.bin...');
@@ -1126,12 +1188,12 @@
                 const octreeUrl = cloud.getOctreeUrl();
                 log(`Octree URL ready for streaming: ${octreeUrl}`);
                 
-                const scheduler = new Potree2Scheduler(cloud, this.extension, octreeUrl);
+                const scheduler = new Potree2Scheduler(cloud, this.extension, octreeUrl, cloud.getHierarchyUrl());
                 
                 await scheduler.nodeLoader.loadNode(cloud.root);
                 
                 if (cloud.root.loaded && cloud.root.points) {
-                    this.extension.addNodeToScene(cloud.root);
+                    scheduler._addNodeToScene(cloud.root);
                 }
                 
                 this.clouds.set(name, cloud);
@@ -1197,6 +1259,33 @@
         setPointBudget(budget) {
             POTREE2_CONFIG.POINT_BUDGET = budget;
             log(`Potree 2.0 point budget set to: ${budget.toLocaleString()}`);
+        }
+
+        /**
+         * Set point size for one Potree 2.0 cloud and persist it for nodes loaded later.
+         * @param {string} name
+         * @param {number} size
+         */
+        setPointSize(name, size) {
+            const cloud = this.clouds.get(name);
+            const scheduler = this.schedulers.get(name);
+            
+            if (!cloud || !scheduler) {
+                return;
+            }
+            
+            cloud.pointSize = size;
+            
+            const nodes = cloud.nodes || scheduler.visibleNodes;
+            for (const node of nodes.values ? nodes.values() : nodes) {
+                if (node.material) {
+                    node.material.size = size;
+                    node.material.needsUpdate = true;
+                }
+            }
+            
+            this.extension.viewer.impl.invalidate(true);
+            log(`Potree 2.0 point size set for '${name}': ${size}`);
         }
 
         /**

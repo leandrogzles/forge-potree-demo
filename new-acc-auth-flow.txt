@@ -1,0 +1,40 @@
+ 
+• Flow now:
+ 
+ 
+  1. Frontend button click
+      - File: web-frontend/src/components/Settings/Integrations/AccIntegrationSettingsTab.vue
+      - Calls GraphQL:
+ 
+ 
+     getAccAuthenticationUrl(project_id)
+ 
+ 
+  2. Backend resolver validates user
+      - File: web-backend/src/modules/accConnection/resolver.js
+      - Checks user is owner/admin on project_id.
+      - Generates random state.
+      - Stores:
+ 
+ 
+     acc_oauth_state.state_hash = sha256(state)
+     acc_oauth_state.project_id = project_id
+     acc_oauth_state.user_id = current user
+     acc_oauth_state.expires_at = now + 10 min
+ 
+ 
+  3. Backend returns Autodesk URL
+      - File: web-backend/src/libraries/accConnection.js
+      - URL includes:
+ 
+ 
+     client_id
+     response_type=code
+     redirect_uri=<backend>/acc/auth/callback
+     scope=...
+     state=<raw random state>
+ 
+ 
+  4. Frontend redirects browser
+      - Same frontend file.
+      - window.location.href = authUrl

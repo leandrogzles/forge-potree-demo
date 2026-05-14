@@ -336,6 +336,19 @@
                     <div class="file-size" id="file-size"></div>
                 </div>
                 
+                <div class="form-row mt-3">
+                    <div class="form-group col-md-6">
+                        <label for="conversion-spacing">Potree spacing</label>
+                        <input type="number" class="form-control" id="conversion-spacing" min="0.001" step="0.001" placeholder="auto">
+                        <small class="form-text text-muted">Lower value keeps denser point detail. Empty uses PotreeConverter auto spacing.</small>
+                    </div>
+                    <div class="form-group col-md-6">
+                        <label for="conversion-max-depth">Max octree depth</label>
+                        <input type="number" class="form-control" id="conversion-max-depth" min="1" max="20" step="1" placeholder="auto">
+                        <small class="form-text text-muted">Higher value allows deeper LOD when source density supports it.</small>
+                    </div>
+                </div>
+                
                 <div id="progress-section" style="display: none;">
                     <div class="progress">
                         <div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar" role="progressbar" style="width: 0%">0%</div>
@@ -512,6 +525,15 @@
             
             const formData = new FormData();
             formData.append('file', selectedFile);
+            
+            const spacing = document.getElementById('conversion-spacing').value;
+            const maxDepth = document.getElementById('conversion-max-depth').value;
+            if (spacing) {
+                formData.append('spacing', spacing);
+            }
+            if (maxDepth) {
+                formData.append('maxDepth', maxDepth);
+            }
             
             try {
                 // Phase 1: Upload file

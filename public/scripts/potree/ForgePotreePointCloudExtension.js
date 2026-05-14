@@ -18,7 +18,7 @@
     // ========================================================================
     
     const CONFIG = {
-        POINT_BUDGET: 20_000_000,          // Max points to render (high for detailed views)
+        POINT_BUDGET: 80_000_000,          // Max points to render (high for detailed views)
         MAX_CONCURRENT_LOADS: 24,// 12,          // Concurrent bin fetches (increased)
         MIN_NODE_PIXEL_SIZE: 2,// 5,            // Min screen size for node selection (very low = more detail)
         REFINEMENT_THRESHOLD: 30,          // Screen pixels threshold to refine (low = aggressive refinement)
@@ -1658,12 +1658,22 @@
         setPointSize(name, size) {
             const scheduler = this.schedulers.get(name);
             if (scheduler) {
+                const cloud = this.clouds.get(name);
+                if (cloud) {
+                    cloud.pointSize = size;
+                }
+                
                 for (const node of scheduler.visibleNodes) {
                     if (node.material) {
                         node.material.size = size;
+                        node.material.needsUpdate = true;
                     }
                 }
                 this.viewer.impl.invalidate(true);
+            }
+            
+            if (this.clouds2.has(name) && this.potree2Loader) {
+                this.potree2Loader.setPointSize(name, size);
             }
         }
 
@@ -1673,6 +1683,9 @@
          */
         setPointBudget(budget) {
             CONFIG.POINT_BUDGET = budget;
+            if (this.potree2Loader) {
+                this.potree2Loader.setPointBudget(budget);
+            }
             log(`Point budget set to: ${budget.toLocaleString()}`);
         }
 
@@ -1926,6 +1939,10 @@
          * @returns {Object}
          */
         getLODConfig() {
+            if (this.clouds2.size > 0 && this.potree2Loader) {
+                return this.potree2Loader.getLODConfig();
+            }
+            
             return {
                 pointBudget: CONFIG.POINT_BUDGET,
                 refinementThreshold: CONFIG.REFINEMENT_THRESHOLD,
@@ -1961,7 +1978,7 @@
                 totalPoints,
                 totalNodes,
                 cloudsLoaded: this.clouds.size + this.clouds2.size,
-                pointBudget: CONFIG.POINT_BUDGET
+                pointBudget: this.getLODConfig().pointBudget
             };
         }
 
