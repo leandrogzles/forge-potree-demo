@@ -25,7 +25,7 @@
         CACHE_SIZE: 300,                   // Max cached nodes (increased)
         UPDATE_INTERVAL: 25,               // ms between scheduler updates (faster)
         DEBUG: true,                       // Enable console logs
-        DEBUG_LOD: true                    // Enable detailed LOD debug logs (TEMPORARY FOR DEBUG)
+        DEBUG_LOD: false                   // Enable verbose LOD debug logs only when diagnosing
     };
 
     // Point attribute sizes in bytes
@@ -1190,6 +1190,10 @@
             
             this._updateBound = this._onUpdate.bind(this);
             this._cameraChangeBound = this._onCameraChange.bind(this);
+            this._renderLoopBound = this._renderLoop.bind(this);
+            this._renderLoopHandle = null;
+            this._lastRenderedPoints = -1;
+            this._idleFrames = 0;
             
             this._enabled = true;
         }
@@ -1226,6 +1230,7 @@
                 Autodesk.Viewing.CAMERA_CHANGE_EVENT,
                 this._cameraChangeBound
             );
+            this._stopRenderLoop();
             
             // Dispose all clouds
             for (const [name, scheduler] of this.schedulers) {
@@ -1295,6 +1300,7 @@
                 this.clouds2.set(name, cloud);
                 
                 this._onCameraChange();
+                this._startRenderLoop();
                 
                 log(`Potree 2.0 point cloud '${name}' loaded successfully`);
                 log(`  - Total points: ${cloud.points.toLocaleString()}`);
@@ -1362,6 +1368,7 @@
                 
                 // Trigger initial update
                 this._onCameraChange();
+                this._startRenderLoop();
                 
                 log(`Potree 1.x point cloud '${name}' loaded successfully`);
                 log(`  - Points in root: ${cloud.root.numPoints}`);
@@ -1401,6 +1408,10 @@
             }
             
             this.viewer.impl.invalidate(true);
+
+            if (!this._hasPointClouds()) {
+                this._stopRenderLoop();
+            }
         }
 
         /**
@@ -1960,11 +1971,19 @@
         getStats() {
             let totalPoints = 0;
             let totalNodes = 0;
+            let totalCloudPoints = 0;
+            let totalHierarchyNodes = 0;
+            let loadedNodes = 0;
+            let loadingNodes = 0;
+            let selectedNodes = 0;
+            let failedNodes = 0;
             
             // Potree 1.x stats
             for (const scheduler of this.schedulers.values()) {
                 totalPoints += scheduler.renderedPoints;
                 totalNodes += scheduler.visibleNodes.size;
+                loadingNodes += scheduler.loadingNodes.size;
+                selectedNodes += scheduler.selectedNodes.size;
             }
             
             // Potree 2.0 stats
@@ -1972,13 +1991,25 @@
                 const p2Stats = this.potree2Loader.getStats();
                 totalPoints += p2Stats.totalPoints;
                 totalNodes += p2Stats.totalNodes;
+                totalCloudPoints += p2Stats.totalCloudPoints || 0;
+                totalHierarchyNodes += p2Stats.totalHierarchyNodes || 0;
+                loadedNodes += p2Stats.loadedNodes || 0;
+                loadingNodes += p2Stats.loadingNodes || 0;
+                selectedNodes += p2Stats.selectedNodes || 0;
+                failedNodes += p2Stats.failedNodes || 0;
             }
             
             return {
                 totalPoints,
                 totalNodes,
                 cloudsLoaded: this.clouds.size + this.clouds2.size,
-                pointBudget: this.getLODConfig().pointBudget
+                pointBudget: this.getLODConfig().pointBudget,
+                totalCloudPoints,
+                totalHierarchyNodes,
+                loadedNodes,
+                loadingNodes,
+                selectedNodes,
+                failedNodes
             };
         }
 
@@ -2002,15 +2033,74 @@
             node.points.matrixWorld.copy(node.cloud.matrixWorld);
             
             this.viewer.impl.addOverlay(this.overlayName, node.points);
+            this.viewer.impl.invalidate(true);
         }
 
         removeNodeFromScene(node) {
             if (!node.points) return;
             
             this.viewer.impl.removeOverlay(this.overlayName, node.points);
+            this.viewer.impl.invalidate(true);
         }
 
-        _onCameraChange() {
+        _hasPointClouds() {
+            return this.clouds.size > 0 || this.clouds2.size > 0;
+        }
+
+        _startRenderLoop() {
+            if (this._renderLoopHandle !== null) {
+                return;
+            }
+
+            this._idleFrames = 0;
+            this._lastRenderedPoints = -1;
+            this._renderLoopHandle = requestAnimationFrame(this._renderLoopBound);
+            log('Point cloud render loop started');
+        }
+
+        _stopRenderLoop() {
+            if (this._renderLoopHandle === null) {
+                return;
+            }
+
+            cancelAnimationFrame(this._renderLoopHandle);
+            this._renderLoopHandle = null;
+            log('Point cloud render loop stopped');
+        }
+
+        _renderLoop() {
+            this._renderLoopHandle = null;
+
+            if (!this._enabled || !this._hasPointClouds()) {
+                return;
+            }
+
+            this._onCameraChange({ fromRenderLoop: true });
+
+            const stats = this.getStats();
+            const hasLoading = stats.loadingNodes > 0;
+            const hasFailed = stats.failedNodes > 0;
+            const isComplete = stats.totalCloudPoints > 0 &&
+                stats.totalPoints >= stats.totalCloudPoints &&
+                stats.loadingNodes === 0 &&
+                stats.failedNodes === 0;
+            const pointsChanged = stats.totalPoints !== this._lastRenderedPoints;
+
+            this._lastRenderedPoints = stats.totalPoints;
+            this._idleFrames = hasLoading || pointsChanged ? 0 : this._idleFrames + 1;
+
+            // Keep advancing after async node loads complete so deeper LOD nodes
+            // can be queued even when the camera is stationary.
+            if (isComplete) {
+                log(`Point cloud render loop complete: ${stats.totalPoints.toLocaleString()} points`);
+            } else if (!hasFailed && this._idleFrames < 180) {
+                this._renderLoopHandle = requestAnimationFrame(this._renderLoopBound);
+            } else {
+                log(`Point cloud render loop idle: ${stats.totalPoints.toLocaleString()} points, ${stats.loadedNodes || 0}/${stats.totalHierarchyNodes || 0} nodes loaded`);
+            }
+        }
+
+        _onCameraChange(options = {}) {
             if (!this._enabled) return;
             
             const camera = this.viewer.impl.camera;
@@ -2030,6 +2120,10 @@
             }
             
             this.viewer.impl.invalidate(true);
+
+            if (!options.fromRenderLoop && this._hasPointClouds()) {
+                this._startRenderLoop();
+            }
         }
 
         _onUpdate() {

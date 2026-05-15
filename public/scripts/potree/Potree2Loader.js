@@ -217,9 +217,8 @@
             const root = new Potree2Node('r', this.cloud);
             nodes.set('r', root);
             
-            // Potree 2.0 hierarchy is depth-first encoded
-            // Parse recursively starting at offset 0
-            const result = this._parseNodeRecursive(view, 0, root, nodes, bufferSize);
+            // Potree 2.0 hierarchy chunks are encoded in breadth-first order.
+            const result = this._parseHierarchyChunk(view, 0, root, nodes, bufferSize);
             
             log(`Hierarchy parsed: ${nodes.size} nodes, consumed ${result.nextOffset} bytes`);
             
@@ -256,79 +255,68 @@
             const nodes = new Map();
             nodes.set(root.name, root);
 
-            const result = this._parseNodeRecursive(view, 0, root, nodes, bufferSize);
+            const result = this._parseHierarchyChunk(view, 0, root, nodes, bufferSize);
             log(`Hierarchy chunk parsed for ${root.name}: ${nodes.size} nodes, consumed ${result.nextOffset} bytes`);
 
             return { root, nodes };
         }
         
         /**
-         * Recursively parse node and all its children (depth-first)
-         * Returns { nextOffset } - the offset after this node's subtree
+         * Parse a Potree 2.0 hierarchy chunk in breadth-first order.
+         * Returns { nextOffset } - the offset after this chunk.
          */
-        _parseNodeRecursive(view, offset, node, nodes, bufferSize) {
-            if (offset + this.bytesPerNode > bufferSize) {
-                warn(`Offset ${offset} exceeds buffer for node ${node.name}`);
-                return { nextOffset: offset };
-            }
-            
-            // Read node data
-            const type = view.getUint8(offset);
-            const childMask = view.getUint8(offset + 1);
-            const numPoints = view.getUint32(offset + 2, true);
-            const byteOffset = Number(view.getBigInt64(offset + 6, true));
-            const byteSize = Number(view.getBigInt64(offset + 14, true));
-            
-            // Log first few nodes and any PROXY nodes
+        _parseHierarchyChunk(view, offset, root, nodes, bufferSize) {
+            const queue = [root];
+            let currentOffset = offset;
             const typeNames = ['NORMAL', 'LEAF', 'PROXY'];
-            if (nodes.size < 30 || type === NODE_TYPE.PROXY) {
-                log(`Parse ${node.name}: type=${typeNames[type] || type}, mask=${childMask.toString(2).padStart(8,'0')}, pts=${numPoints}, offset=${byteOffset}, size=${byteSize}`);
-            }
-            
-            node.numPoints = numPoints;
-            node.nodeType = type;
-            node.children.fill(null);
-            node.hasChildren = false;
-            
-            // For PROXY nodes: byteOffset/byteSize point to hierarchy.bin chunk
-            // For NORMAL/LEAF: byteOffset/byteSize point to octree.bin data
-            if (type === NODE_TYPE.PROXY) {
-                // Store hierarchy chunk location for lazy loading
-                node.hierarchyByteOffset = byteOffset;
-                node.hierarchyByteSize = byteSize;
-                // Point data location will be determined when loading children
-                node.byteOffset = 0;
-                node.byteSize = 0;
-                return { nextOffset: offset + this.bytesPerNode };
-            } else {
-                node.byteOffset = byteOffset;
-                node.byteSize = byteSize;
-            }
-            
-            let currentOffset = offset + this.bytesPerNode;
-            
-            // Count children
-            let childCount = 0;
-            for (let i = 0; i < 8; i++) {
-                if (childMask & (1 << i)) childCount++;
-            }
-            
-            if (childCount > 0) {
-                // NORMAL or LEAF with children: children follow inline
+
+            while (queue.length > 0 && currentOffset + this.bytesPerNode <= bufferSize) {
+                const node = queue.shift();
+
+                const type = view.getUint8(currentOffset);
+                const childMask = view.getUint8(currentOffset + 1);
+                const numPoints = view.getUint32(currentOffset + 2, true);
+                const byteOffset = Number(view.getBigInt64(currentOffset + 6, true));
+                const byteSize = Number(view.getBigInt64(currentOffset + 14, true));
+
+                if (POTREE2_CONFIG.DEBUG_LOD && (nodes.size < 30 || type === NODE_TYPE.PROXY)) {
+                    log(`Parse ${node.name}: type=${typeNames[type] || type}, mask=${childMask.toString(2).padStart(8,'0')}, pts=${numPoints}, offset=${byteOffset}, size=${byteSize}`);
+                }
+
+                node.numPoints = numPoints;
+                node.nodeType = type;
+                node.children.fill(null);
+                node.hasChildren = false;
+
+                if (type === NODE_TYPE.PROXY) {
+                    node.hierarchyByteOffset = byteOffset;
+                    node.hierarchyByteSize = byteSize;
+                    node.byteOffset = 0;
+                    node.byteSize = 0;
+                } else {
+                    node.hierarchyByteOffset = 0;
+                    node.hierarchyByteSize = 0;
+                    node.byteOffset = byteOffset;
+                    node.byteSize = byteSize;
+                }
+
                 for (let i = 0; i < 8; i++) {
                     if (childMask & (1 << i)) {
                         const childName = node.getChildName(i);
                         const child = new Potree2Node(childName, this.cloud, node);
                         node.addChild(i, child);
                         nodes.set(childName, child);
-                        
-                        // Parse child recursively - it continues right after parent
-                        const result = this._parseNodeRecursive(view, currentOffset, child, nodes, bufferSize);
-                        currentOffset = result.nextOffset;
+                        queue.push(child);
                     }
                 }
+
+                currentOffset += this.bytesPerNode;
             }
-            
+
+            if (queue.length > 0) {
+                warn(`Hierarchy chunk ended with ${queue.length} unparsed queued nodes`);
+            }
+
             return { nextOffset: currentOffset };
         }
     }
@@ -378,7 +366,9 @@
                     const startByte = node.byteOffset;
                     const endByte = node.byteOffset + node.byteSize - 1;
                     
-                    log(`Loading node ${node.name}: bytes ${startByte}-${endByte} (${node.byteSize} bytes, ${node.numPoints} points)`);
+                    if (POTREE2_CONFIG.DEBUG_LOD) {
+                        log(`Loading node ${node.name}: bytes ${startByte}-${endByte} (${node.byteSize} bytes, ${node.numPoints} points)`);
+                    }
 
                     const response = await fetch(this.octreeUrl, {
                         headers: {
@@ -404,7 +394,9 @@
                     node.loaded = true;
                     node.loading = false;
                     
-                    log(`Node ${node.name} loaded: ${node.numPoints} points`);
+                    if (POTREE2_CONFIG.DEBUG_LOD) {
+                        log(`Node ${node.name} loaded: ${node.numPoints} points`);
+                    }
 
                 } catch (err) {
                     warn(`Failed to load node ${node.name}:`, err.message);
@@ -427,7 +419,9 @@
             const startByte = node.hierarchyByteOffset;
             const endByte = node.hierarchyByteOffset + node.hierarchyByteSize - 1;
 
-            log(`Loading hierarchy chunk ${node.name}: bytes ${startByte}-${endByte}`);
+            if (POTREE2_CONFIG.DEBUG_LOD) {
+                log(`Loading hierarchy chunk ${node.name}: bytes ${startByte}-${endByte}`);
+            }
 
             const response = await fetch(this.hierarchyUrl, {
                 headers: {
@@ -592,7 +586,7 @@
         MIN_NODE_PIXEL_SIZE: 1,            // Lower = denser visible detail
         REFINEMENT_THRESHOLD: 10,          // Lower = more aggressive child loading
         UPDATE_INTERVAL: 30,               // ms between updates (faster)
-        DEBUG_LOD: true                    // Enable LOD debug logs (for debugging)
+        DEBUG_LOD: false                   // Enable verbose LOD debug logs only when diagnosing
     };
 
     class Potree2Scheduler {
@@ -958,8 +952,8 @@
         _collectCandidates(node, camera, screenSize, candidates, depth = 0) {
             if (!node) return;
             
-            // Higher depth limit
-            if (depth > 15) return;
+            // Safety guard only. Real Potree 2.0 depth comes from metadata/hierarchy.
+            if (depth > 80) return;
             
             // Calculate distance first (needed for leniency checks)
             const worldBox = node.boundingBox.clone();
@@ -1239,16 +1233,47 @@
         getStats() {
             let totalPoints = 0;
             let totalNodes = 0;
+            let totalCloudPoints = 0;
+            let totalHierarchyNodes = 0;
+            let loadedNodes = 0;
+            let loadingNodes = 0;
+            let selectedNodes = 0;
+            let failedNodes = 0;
             
             for (const scheduler of this.schedulers.values()) {
                 totalPoints += scheduler.renderedPoints;
                 totalNodes += scheduler.visibleNodes.size;
+                loadingNodes += scheduler.loadingNodes.size;
+                selectedNodes += scheduler.selectedNodes.size;
+            }
+
+            for (const cloud of this.clouds.values()) {
+                totalCloudPoints += cloud.points || 0;
+
+                if (cloud.nodes) {
+                    totalHierarchyNodes += cloud.nodes.size;
+
+                    for (const node of cloud.nodes.values()) {
+                        if (node.loaded && node.points) {
+                            loadedNodes++;
+                        }
+                        if (node.failed) {
+                            failedNodes++;
+                        }
+                    }
+                }
             }
             
             return {
                 totalPoints,
                 totalNodes,
-                cloudsLoaded: this.clouds.size
+                cloudsLoaded: this.clouds.size,
+                totalCloudPoints,
+                totalHierarchyNodes,
+                loadedNodes,
+                loadingNodes,
+                selectedNodes,
+                failedNodes
             };
         }
 

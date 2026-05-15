@@ -460,7 +460,14 @@
         <div id="stats">
             <div>Model: <span class="stat-value" id="stat-model">Not loaded</span></div>
             <div>Points Rendered: <span class="stat-value" id="stat-points">0</span></div>
+            <div>Total Cloud Points: <span class="stat-value" id="stat-total-points">0</span></div>
+            <div>Render Progress: <span class="stat-value" id="stat-render-progress">0%</span></div>
             <div>Nodes Visible: <span class="stat-value" id="stat-nodes">0</span></div>
+            <div>Nodes Loading: <span class="stat-value" id="stat-loading-nodes">0</span></div>
+            <div>Nodes Loaded: <span class="stat-value" id="stat-loaded-nodes">0</span></div>
+            <div>Nodes Selected: <span class="stat-value" id="stat-selected-nodes">0</span></div>
+            <div>Hierarchy Nodes: <span class="stat-value" id="stat-hierarchy-nodes">0</span></div>
+            <div>Failed Nodes: <span class="stat-value" id="stat-failed-nodes">0</span></div>
             <div>Clouds Loaded: <span class="stat-value" id="stat-clouds">0</span></div>
             <div>Point Budget: <span class="stat-value" id="stat-budget">80,000,000</span></div>
             <div style="margin-top: 8px; border-top: 1px solid #333; padding-top: 8px;">
@@ -492,6 +499,7 @@
         let clashExt = null;
         let modelLoaded = false;
         let currentModelName = null;
+        let lastPointCloudFeedback = { key: '', time: 0, done: false };
         
         // ====================================================================
         // LOGGING
@@ -521,7 +529,7 @@
         console.log = function(...args) {
             originalLog.apply(console, args);
             if (args[0] && typeof args[0] === 'string') {
-                if (args[0].includes('[ForgePotree]') || args[0].includes('[ClashDepth]')) {
+                if (args[0].includes('[ForgePotree]') || args[0].includes('[Potree2Loader]') || args[0].includes('[ClashDepth]')) {
                     addLog(args.join(' '), 'info');
                 }
             }
@@ -530,7 +538,7 @@
         console.warn = function(...args) {
             originalWarn.apply(console, args);
             if (args[0] && typeof args[0] === 'string') {
-                if (args[0].includes('[ForgePotree]') || args[0].includes('[ClashDepth]')) {
+                if (args[0].includes('[ForgePotree]') || args[0].includes('[Potree2Loader]') || args[0].includes('[ClashDepth]')) {
                     addLog(args.join(' '), 'warn');
                 }
             }
@@ -1318,9 +1326,20 @@
             
             const stats = potreeExt.getStats();
             const lodConfig = potreeExt.getLODConfig();
+            const totalCloudPoints = stats.totalCloudPoints || 0;
+            const renderProgress = totalCloudPoints > 0
+                ? Math.min(100, stats.totalPoints / totalCloudPoints * 100)
+                : 0;
             
             document.getElementById('stat-points').textContent = stats.totalPoints.toLocaleString();
+            document.getElementById('stat-total-points').textContent = totalCloudPoints.toLocaleString();
+            document.getElementById('stat-render-progress').textContent = renderProgress.toFixed(2) + '%';
             document.getElementById('stat-nodes').textContent = stats.totalNodes;
+            document.getElementById('stat-loading-nodes').textContent = stats.loadingNodes || 0;
+            document.getElementById('stat-loaded-nodes').textContent = stats.loadedNodes || 0;
+            document.getElementById('stat-selected-nodes').textContent = stats.selectedNodes || 0;
+            document.getElementById('stat-hierarchy-nodes').textContent = stats.totalHierarchyNodes || 0;
+            document.getElementById('stat-failed-nodes').textContent = stats.failedNodes || 0;
             document.getElementById('stat-clouds').textContent = stats.cloudsLoaded;
             document.getElementById('stat-budget').textContent = stats.pointBudget.toLocaleString();
             document.getElementById('stat-min-node').textContent = lodConfig.minNodePixelSize;
@@ -1340,6 +1359,56 @@
             } else {
                 usageEl.style.color = '#4fc3f7'; // normal blue
             }
+
+            updatePointCloudFeedback(stats, renderProgress);
+        }
+
+        function updatePointCloudFeedback(stats, renderProgress) {
+            if (!stats.cloudsLoaded) return;
+
+            const now = Date.now();
+            const isComplete = stats.totalCloudPoints > 0 &&
+                stats.totalPoints >= stats.totalCloudPoints &&
+                (stats.loadingNodes || 0) === 0 &&
+                (stats.failedNodes || 0) === 0;
+
+            if (lastPointCloudFeedback.done && isComplete) {
+                setCloudStatus('ready');
+                return;
+            }
+
+            const key = [
+                stats.totalPoints,
+                stats.loadingNodes || 0,
+                stats.loadedNodes || 0,
+                stats.selectedNodes || 0,
+                stats.failedNodes || 0,
+                isComplete ? 'done' : 'active'
+            ].join(':');
+
+            if (key === lastPointCloudFeedback.key && now - lastPointCloudFeedback.time < 5000) {
+                return;
+            }
+
+            if (stats.failedNodes > 0) {
+                setCloudStatus('error');
+                addLog(`Point cloud loading has ${stats.failedNodes} failed nodes. Rendered ${stats.totalPoints.toLocaleString()} / ${(stats.totalCloudPoints || 0).toLocaleString()} points (${renderProgress.toFixed(2)}%).`, 'error');
+                lastPointCloudFeedback.done = true;
+            } else if (stats.loadingNodes > 0) {
+                setCloudStatus('loading');
+                addLog(`Point cloud loading: ${stats.loadingNodes} nodes in flight, ${stats.loadedNodes || 0}/${stats.totalHierarchyNodes || 0} nodes loaded, ${stats.totalPoints.toLocaleString()} / ${(stats.totalCloudPoints || 0).toLocaleString()} points (${renderProgress.toFixed(2)}%).`, 'info');
+            } else {
+                setCloudStatus('ready');
+                if (isComplete) {
+                    addLog(`Point cloud fully rendered: ${stats.totalPoints.toLocaleString()} / ${stats.totalCloudPoints.toLocaleString()} points.`, 'success');
+                    lastPointCloudFeedback.done = true;
+                } else {
+                    addLog(`Point cloud idle: ${stats.loadedNodes || 0}/${stats.totalHierarchyNodes || 0} nodes loaded, ${stats.totalPoints.toLocaleString()} / ${(stats.totalCloudPoints || 0).toLocaleString()} points (${renderProgress.toFixed(2)}%).`, 'success');
+                }
+            }
+
+            lastPointCloudFeedback.key = key;
+            lastPointCloudFeedback.time = now;
         }
         
         // Update stats periodically
